@@ -26,17 +26,49 @@ if (!$koneksi) {
 mysqli_set_charset($koneksi, 'utf8');
 
 // 1b. AMBIL LOGO & NAMA RS DARI DATABASE ANTRIAN
-$logoUrl = '';
-$namaRS  = 'RS Kartika Husada Jatiasih'; // fallback
+$logoUrl  = '';
+$namaRS   = 'RS KARTIKA HUSADA JATIASIH'; // fallback
 $alamatRS = '';
 $sqlApp = "SELECT logo, nama_perusahaan, alamat FROM antrian.aplikasi LIMIT 1";
 $resApp = mysqli_query($koneksi, $sqlApp);
 if ($resApp && $rowApp = mysqli_fetch_assoc($resApp)) {
-    $logoUrl  = $rowApp['logo'] ?? '';
+    $logoFile = trim((string)($rowApp['logo'] ?? ''));
     if (!empty($rowApp['nama_perusahaan'])) {
         $namaRS = $rowApp['nama_perusahaan'];
     }
     $alamatRS = $rowApp['alamat'] ?? '';
+
+    if (!empty($logoFile)) {
+        // Cari file fisik logo di beberapa lokasi
+        $candidatePaths = [
+            __DIR__ . '/' . $logoFile,
+            dirname(__DIR__) . '/' . $logoFile,
+            'E:/antri/img/' . $logoFile,
+            'E:/rskhj/radiologi/' . $logoFile,
+            'E:/rskhj/' . $logoFile,
+        ];
+        foreach ($candidatePaths as $cp) {
+            if (file_exists($cp) && is_file($cp)) {
+                $ext = strtolower(pathinfo($cp, PATHINFO_EXTENSION));
+                $mime = ($ext === 'png') ? 'image/png' : (($ext === 'gif') ? 'image/gif' : 'image/jpeg');
+                $logoUrl = 'data:' . $mime . ';base64,' . base64_encode(file_get_contents($cp));
+                break;
+            }
+        }
+        if (empty($logoUrl)) {
+            $logoUrl = $logoFile; // fallback ke relative filename
+        }
+    }
+}
+
+// Fallback jika belum ada logo: coba ambil BLOB dari tabel setting SIMRS Khanza
+if (empty($logoUrl)) {
+    $resSet = mysqli_query($koneksi, "SELECT logo FROM setting LIMIT 1");
+    if ($resSet && $rowSet = mysqli_fetch_assoc($resSet)) {
+        if (!empty($rowSet['logo'])) {
+            $logoUrl = 'data:image/png;base64,' . base64_encode($rowSet['logo']);
+        }
+    }
 }
 
 // 2. HELPER FUNCTIONS
@@ -356,6 +388,51 @@ function buildPageUrl($pageNum, $extraParams = []) {
             justify-content: center;
             font-size: 1.5rem;
             border: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .header-left-group {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .header-logo {
+            width: 58px;
+            height: 58px;
+            background: rgba(255,255,255,0.95);
+            border-radius: 14px;
+            padding: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            flex-shrink: 0;
+            border: 2px solid rgba(255,255,255,0.8);
+            overflow: hidden;
+        }
+
+        .header-logo img {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+            display: block;
+        }
+
+        .header-logo-fallback {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--kh-primary);
+            font-size: 1.6rem;
+        }
+
+        .header-alamat {
+            font-size: 0.76rem;
+            opacity: 0.85;
+            margin-top: 2px;
+            font-weight: 400;
         }
 
         /* ======= STATS CARDS ======= */
