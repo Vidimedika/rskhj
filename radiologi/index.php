@@ -25,6 +25,20 @@ if (!$koneksi) {
 }
 mysqli_set_charset($koneksi, 'utf8');
 
+// 1b. AMBIL LOGO & NAMA RS DARI DATABASE ANTRIAN
+$logoUrl = '';
+$namaRS  = 'RS Kartika Husada Jatiasih'; // fallback
+$alamatRS = '';
+$sqlApp = "SELECT logo, nama_perusahaan, alamat FROM antrian.aplikasi LIMIT 1";
+$resApp = mysqli_query($koneksi, $sqlApp);
+if ($resApp && $rowApp = mysqli_fetch_assoc($resApp)) {
+    $logoUrl  = $rowApp['logo'] ?? '';
+    if (!empty($rowApp['nama_perusahaan'])) {
+        $namaRS = $rowApp['nama_perusahaan'];
+    }
+    $alamatRS = $rowApp['alamat'] ?? '';
+}
+
 // 2. HELPER FUNCTIONS
 $validDate = static function ($value, $fallback) {
     $date = DateTime::createFromFormat('Y-m-d', (string)$value);
@@ -905,20 +919,32 @@ function buildPageUrl($pageNum, $extraParams = []) {
     <!-- HEADER -->
     <div class="app-header animate-in">
         <div class="header-content">
-            <div class="header-left">
-                <h1><i class="fa-solid fa-x-ray"></i> Pemeriksaan Radiologi</h1>
-                <div class="subtitle">RS Kartika Husada Jatiasih</div>
-                <div class="header-badge">
-                    <i class="fa-solid fa-link"></i> Terintegrasi SIMRS Khanza
+            <div class="header-left-group">
+                <?php if (!empty($logoUrl)): ?>
+                <div class="header-logo">
+                    <img src="<?= $escape($logoUrl) ?>" alt="Logo <?= $escape($namaRS) ?>" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+                    <div class="header-logo-fallback" style="display:none;"><i class="fa-solid fa-hospital"></i></div>
+                </div>
+                <?php else: ?>
+                <div class="header-logo">
+                    <div class="header-logo-fallback"><i class="fa-solid fa-hospital"></i></div>
+                </div>
+                <?php endif; ?>
+                <div class="header-left">
+                    <h1><i class="fa-solid fa-x-ray"></i> Pemeriksaan Radiologi</h1>
+                    <div class="subtitle"><?= $escape($namaRS) ?></div>
+                    <?php if (!empty($alamatRS)): ?>
+                    <div class="header-alamat"><?= $escape($alamatRS) ?></div>
+                    <?php endif; ?>
+                    <div class="header-badge">
+                        <i class="fa-solid fa-link"></i> Terintegrasi SIMRS Khanza
+                    </div>
                 </div>
             </div>
             <div class="header-right">
                 <div class="header-date">
                     <div><i class="fa-regular fa-calendar"></i> <?= date('d F Y') ?></div>
                     <div><i class="fa-regular fa-clock"></i> <span id="live-clock"><?= date('H:i:s') ?></span></div>
-                </div>
-                <div class="header-icon">
-                    <i class="fa-solid fa-hospital"></i>
                 </div>
             </div>
         </div>
