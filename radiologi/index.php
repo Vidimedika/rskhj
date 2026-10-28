@@ -4,11 +4,13 @@
  * Terintegrasi dengan SIMRS Khanza
  * 
  * Fitur:
+ * - Pagination server-side (LIMIT/OFFSET) agar tidak lemot
+ * - Query COUNT terpisah untuk statistik (ringan)
  * - Daftar pemeriksaan radiologi dengan filter tanggal, status ekspertisi, dan pencarian
- * - Status ekspertisi radiologi (Sudah Terbaca / Belum Terbaca)
+ * - Status ekspertisi radiologi (Sudah Dibaca / Belum Dibaca)
  * - Status foto dan hasil radiologi
  * - Summary statistik
- * - Export ke Excel
+ * - Export ke Excel (semua data tanpa pagination)
  */
 
 // 1. KONEKSI DATABASE SIMRS Khanza
@@ -40,7 +42,12 @@ $cari      = trim((string)($_GET['cari'] ?? ''));
 $filterEks = $_GET['filter_ekspertisi'] ?? ''; // 'sudah', 'belum', atau '' (semua)
 $action    = $_GET['action'] ?? '';
 
-// 4. BUILD QUERY
+// Pagination parameters
+$perPage   = isset($_GET['per_page']) ? max(10, min(200, (int)$_GET['per_page'])) : 25;
+$page      = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
+$offset    = ($page - 1) * $perPage;
+
+// 4. BUILD WHERE CONDITIONS (shared between count & data queries)
 $conditions = ['pr.tgl_periksa BETWEEN ? AND ?'];
 $params     = [$tglAwal, $tglAkhir];
 $types      = 'ss';
@@ -52,21 +59,66 @@ if ($cari !== '') {
     $types .= 'sssss';
 }
 
-// Filter ekspertisi via HAVING clause
-$havingClause = '';
+// Ekspertisi filter — converted to a WHERE-level EXISTS/NOT EXISTS for performance
+$ekspertisiCondition = '';
 if ($filterEks === 'sudah') {
-    $havingClause = 'HAVING status_ekspertisi = \'Sudah Dibaca\'';
+    $ekspertisiCondition = 'AND EXISTS (SELECT 1 FROM hasil_radiologi hr2 WHERE hr2.no_rawat = pr.no_rawat AND hr2.tgl_periksa = pr.tgl_periksa AND hr2.jam = pr.jam AND hr2.hasil <> \'\')';
 } elseif ($filterEks === 'belum') {
-    $havingClause = 'HAVING status_ekspertisi = \'Belum Dibaca\'';
+    $ekspertisiCondition = 'AND NOT EXISTS (SELECT 1 FROM hasil_radiologi hr2 WHERE hr2.no_rawat = pr.no_rawat AND hr2.tgl_periksa = pr.tgl_periksa AND hr2.jam = pr.jam AND hr2.hasil <> \'\')';
 }
 
-$sql = "SELECT pr.no_rawat, rp.no_rkm_medis, pasien.nm_pasien,
+$whereClause = implode(' AND ', $conditions) . ' ' . $ekspertisiCondition;
+
+// Shared FROM + JOINs
+$fromJoins = "FROM periksa_radiologi pr
+        INNER JOIN reg_periksa rp ON rp.no_rawat = pr.no_rawat
+        INNER JOIN pasien ON pasien.no_rkm_medis = rp.no_rkm_medis
+        LEFT JOIN penjab pj ON pj.kd_pj = rp.kd_pj
+        LEFT JOIN jns_perawatan_radiologi jns ON jns.kd_jenis_prw = pr.kd_jenis_prw
+        LEFT JOIN dokter dp ON dp.kd_dokter = pr.kd_dokter
+        LEFT JOIN petugas ON petugas.nip = pr.nip
+        LEFT JOIN dokter dperujuk ON dperujuk.kd_dokter = pr.dokter_perujuk";
+
+// 5. STATISTICS QUERY (lightweight — no subqueries, just counts)
+$sqlStats = "SELECT 
+    COUNT(*) AS total_data,
+    SUM(pr.biaya) AS total_biaya,
+    SUM(CASE WHEN EXISTS (SELECT 1 FROM hasil_radiologi hr WHERE hr.no_rawat = pr.no_rawat AND hr.tgl_periksa = pr.tgl_periksa AND hr.jam = pr.jam AND hr.hasil <> '') THEN 1 ELSE 0 END) AS total_sudah,
+    SUM(CASE WHEN NOT EXISTS (SELECT 1 FROM hasil_radiologi hr WHERE hr.no_rawat = pr.no_rawat AND hr.tgl_periksa = pr.tgl_periksa AND hr.jam = pr.jam AND hr.hasil <> '') THEN 1 ELSE 0 END) AS total_belum,
+    SUM(CASE WHEN EXISTS (SELECT 1 FROM gambar_radiologi gr WHERE gr.no_rawat = pr.no_rawat AND gr.tgl_periksa = pr.tgl_periksa AND gr.jam = pr.jam) THEN 1 ELSE 0 END) AS total_foto,
+    SUM(CASE WHEN EXISTS (SELECT 1 FROM hasil_radiologi hr WHERE hr.no_rawat = pr.no_rawat AND hr.tgl_periksa = pr.tgl_periksa AND hr.jam = pr.jam) THEN 1 ELSE 0 END) AS total_hasil
+    $fromJoins
+    WHERE $whereClause";
+
+$stmtStats = mysqli_prepare($koneksi, $sqlStats);
+if (!$stmtStats) {
+    die('Query statistik gagal: ' . htmlspecialchars(mysqli_error($koneksi), ENT_QUOTES, 'UTF-8'));
+}
+mysqli_stmt_bind_param($stmtStats, $types, ...$params);
+mysqli_stmt_execute($stmtStats);
+$statsResult = mysqli_stmt_get_result($stmtStats);
+$stats = mysqli_fetch_assoc($statsResult);
+mysqli_stmt_close($stmtStats);
+
+$totalData  = (int)($stats['total_data'] ?? 0);
+$totalBiaya = (float)($stats['total_biaya'] ?? 0);
+$totalSudah = (int)($stats['total_sudah'] ?? 0);
+$totalBelum = (int)($stats['total_belum'] ?? 0);
+$totalFoto  = (int)($stats['total_foto'] ?? 0);
+$totalHasil = (int)($stats['total_hasil'] ?? 0);
+
+// Calculate pagination
+$totalPages = max(1, ceil($totalData / $perPage));
+if ($page > $totalPages) $page = $totalPages;
+$offset = ($page - 1) * $perPage;
+
+// 6. DATA QUERY (with LIMIT/OFFSET for pagination, or without for export)
+$sqlData = "SELECT pr.no_rawat, rp.no_rkm_medis, pasien.nm_pasien,
                pr.kd_jenis_prw, jns.nm_perawatan, pj.png_jawab AS jenis_bayar,
                dp.nm_dokter AS dokter_rad, pr.nip, petugas.nama AS petugas_rad,
                pr.dokter_perujuk AS kd_dokter_perujuk,
                dperujuk.nm_dokter AS dokter_perujuk,
                pr.tgl_periksa, pr.jam, pr.biaya,
-               rp.kd_pj,
                CASE WHEN EXISTS (
                    SELECT 1 FROM gambar_radiologi gr
                    WHERE gr.no_rawat = pr.no_rawat
@@ -86,44 +138,33 @@ $sql = "SELECT pr.no_rawat, rp.no_rkm_medis, pasien.nm_pasien,
                      AND hr.jam = pr.jam
                      AND hr.hasil <> ''
                ) THEN 'Sudah Dibaca' ELSE 'Belum Dibaca' END AS status_ekspertisi
-        FROM periksa_radiologi pr
-        INNER JOIN reg_periksa rp ON rp.no_rawat = pr.no_rawat
-        INNER JOIN pasien ON pasien.no_rkm_medis = rp.no_rkm_medis
-        LEFT JOIN penjab pj ON pj.kd_pj = rp.kd_pj
-        LEFT JOIN jns_perawatan_radiologi jns ON jns.kd_jenis_prw = pr.kd_jenis_prw
-        LEFT JOIN dokter dp ON dp.kd_dokter = pr.kd_dokter
-        LEFT JOIN petugas ON petugas.nip = pr.nip
-        LEFT JOIN dokter dperujuk ON dperujuk.kd_dokter = pr.dokter_perujuk
-        WHERE " . implode(' AND ', $conditions) . "
-        $havingClause
+        $fromJoins
+        WHERE $whereClause
         ORDER BY pr.tgl_periksa DESC, pr.jam DESC, pr.no_rawat";
 
-$stmt = mysqli_prepare($koneksi, $sql);
-if (!$stmt) {
-    die('Query gagal disiapkan: ' . htmlspecialchars(mysqli_error($koneksi), ENT_QUOTES, 'UTF-8'));
+// For export: fetch ALL data. For display: use LIMIT/OFFSET
+if ($action !== 'export') {
+    $sqlData .= " LIMIT $perPage OFFSET $offset";
 }
-mysqli_stmt_bind_param($stmt, $types, ...$params);
-mysqli_stmt_execute($stmt);
-$result = mysqli_stmt_get_result($stmt);
 
-// Collect all rows for statistics
+$stmtData = mysqli_prepare($koneksi, $sqlData);
+if (!$stmtData) {
+    die('Query data gagal: ' . htmlspecialchars(mysqli_error($koneksi), ENT_QUOTES, 'UTF-8'));
+}
+mysqli_stmt_bind_param($stmtData, $types, ...$params);
+mysqli_stmt_execute($stmtData);
+$result = mysqli_stmt_get_result($stmtData);
+
 $rows = [];
-$totalBiaya = 0;
-$totalSudah = 0;
-$totalBelum = 0;
-$totalFoto  = 0;
-$totalHasil = 0;
 while ($row = mysqli_fetch_assoc($result)) {
     $rows[] = $row;
-    $totalBiaya += (float)$row['biaya'];
-    if ($row['status_ekspertisi'] === 'Sudah Dibaca') $totalSudah++;
-    else $totalBelum++;
-    if ($row['status_foto'] === 'ada') $totalFoto++;
-    if ($row['status_hasil'] === 'ada') $totalHasil++;
 }
-$totalData = count($rows);
+mysqli_stmt_close($stmtData);
 
-// 5. EXPORT EXCEL
+// Row numbering for current page
+$startNo = $offset + 1;
+
+// 7. EXPORT EXCEL
 if ($action === 'export') {
     $filename = 'Pemeriksaan_Radiologi_RSKHJ_' . $tglAwal . '_sd_' . $tglAkhir . '.xls';
     header('Content-Type: application/vnd.ms-excel; charset=utf-8');
@@ -131,6 +172,15 @@ if ($action === 'export') {
     header('Pragma: no-cache');
     header('Expires: 0');
     echo "\xEF\xBB\xBF"; // UTF-8 BOM
+}
+
+// Helper: build URL with preserved params
+function buildPageUrl($pageNum, $extraParams = []) {
+    $params = $_GET;
+    $params['page'] = $pageNum;
+    unset($params['action']); // don't carry export action
+    $params = array_merge($params, $extraParams);
+    return '?' . http_build_query($params);
 }
 ?>
 <!DOCTYPE html>
@@ -424,10 +474,10 @@ if ($action === 'export') {
         }
 
         .filter-group input[type="search"] {
-            min-width: 220px;
+            min-width: 260px;
         }
 
-        .btn-group {
+        .btn-group-filter {
             display: flex;
             gap: 8px;
             align-items: center;
@@ -496,6 +546,8 @@ if ($action === 'export') {
             padding: 14px 20px;
             border-bottom: 1px solid var(--kh-border);
             background: #fafbfc;
+            flex-wrap: wrap;
+            gap: 10px;
         }
 
         .table-toolbar .data-count {
@@ -508,9 +560,33 @@ if ($action === 'export') {
             font-weight: 700;
         }
 
+        .table-toolbar .per-page-select {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.8rem;
+            color: var(--kh-text-muted);
+        }
+
+        .table-toolbar .per-page-select select {
+            padding: 4px 8px;
+            border: 1.5px solid var(--kh-border);
+            border-radius: var(--radius-xs);
+            font-size: 12px;
+            font-family: 'Inter', sans-serif;
+            color: var(--kh-text);
+            background: white;
+            cursor: pointer;
+            outline: none;
+        }
+
+        .table-toolbar .per-page-select select:focus {
+            border-color: var(--kh-primary);
+        }
+
         .table-wrap {
             overflow: auto;
-            max-height: 62vh;
+            max-height: 58vh;
         }
 
         table {
@@ -595,6 +671,126 @@ if ($action === 'export') {
 
         .badge i { font-size: 10px; }
 
+        /* ======= PAGINATION ======= */
+        .pagination-wrapper {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 14px 20px;
+            border-top: 1px solid var(--kh-border);
+            background: #fafbfc;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+
+        .pagination-info {
+            font-size: 0.8rem;
+            color: var(--kh-text-muted);
+        }
+
+        .pagination-info strong {
+            color: var(--kh-text);
+            font-weight: 700;
+        }
+
+        .pagination {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            list-style: none;
+        }
+
+        .pagination a,
+        .pagination span {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 36px;
+            height: 36px;
+            padding: 0 10px;
+            border-radius: var(--radius-xs);
+            font-size: 12.5px;
+            font-weight: 600;
+            font-family: 'Inter', sans-serif;
+            text-decoration: none;
+            transition: all 0.2s ease;
+            border: 1.5px solid var(--kh-border);
+            background: white;
+            color: var(--kh-text);
+        }
+
+        .pagination a:hover {
+            background: var(--kh-primary-light);
+            border-color: var(--kh-primary);
+            color: var(--kh-primary);
+            transform: translateY(-1px);
+            box-shadow: 0 2px 8px var(--kh-primary-glow);
+        }
+
+        .pagination .active span {
+            background: var(--kh-primary);
+            border-color: var(--kh-primary);
+            color: white;
+            box-shadow: 0 2px 8px var(--kh-primary-glow);
+        }
+
+        .pagination .disabled span {
+            background: #f8fafc;
+            color: #cbd5e1;
+            border-color: #e2e8f0;
+            cursor: not-allowed;
+        }
+
+        .pagination .dots span {
+            border: none;
+            background: transparent;
+            color: var(--kh-text-muted);
+            min-width: 24px;
+            padding: 0;
+        }
+
+        .pagination-goto {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.8rem;
+            color: var(--kh-text-muted);
+        }
+
+        .pagination-goto input {
+            width: 56px;
+            padding: 6px 8px;
+            border: 1.5px solid var(--kh-border);
+            border-radius: var(--radius-xs);
+            font-size: 12px;
+            font-family: 'Inter', sans-serif;
+            text-align: center;
+            outline: none;
+            color: var(--kh-text);
+        }
+
+        .pagination-goto input:focus {
+            border-color: var(--kh-primary);
+            box-shadow: 0 0 0 3px var(--kh-primary-glow);
+        }
+
+        .pagination-goto button {
+            padding: 6px 12px;
+            background: var(--kh-primary);
+            color: white;
+            border: none;
+            border-radius: var(--radius-xs);
+            font-size: 11px;
+            font-weight: 600;
+            font-family: 'Inter', sans-serif;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .pagination-goto button:hover {
+            background: var(--kh-primary-dark);
+        }
+
         /* ======= FOOTER ======= */
         .table-footer {
             display: flex;
@@ -602,7 +798,7 @@ if ($action === 'export') {
             justify-content: space-between;
             padding: 14px 20px;
             border-top: 1px solid var(--kh-border);
-            background: #fafbfc;
+            background: linear-gradient(180deg, #f6faf8, #fafbfc);
             font-size: 12px;
         }
 
@@ -619,7 +815,7 @@ if ($action === 'export') {
             font-size: 11px;
         }
 
-        /* ======= PROGRESS BAR for Ekspertisi ======= */
+        /* ======= PROGRESS BAR ======= */
         .progress-mini {
             display: flex;
             align-items: center;
@@ -692,6 +888,7 @@ if ($action === 'export') {
             .filter-row { flex-direction: column; }
             .filter-group input,
             .filter-group select { min-width: 100%; }
+            .pagination-wrapper { flex-direction: column; align-items: flex-start; }
         }
 
         /* ======= SCROLLBAR ======= */
@@ -806,7 +1003,8 @@ if ($action === 'export') {
                     <label for="cari">Pencarian</label>
                     <input type="search" id="cari" name="cari" value="<?= $escape($cari) ?>" placeholder="No.Rawat / RM / Pasien / Tindakan / Dokter">
                 </div>
-                <div class="btn-group">
+                <input type="hidden" name="per_page" value="<?= $perPage ?>">
+                <div class="btn-group-filter">
                     <button type="submit" class="btn btn-primary"><i class="fa-solid fa-filter"></i> Filter</button>
                     <a href="?" class="btn btn-reset"><i class="fa-solid fa-rotate-left"></i> Reset</a>
                     <button type="submit" name="action" value="export" class="btn btn-excel"><i class="fa-solid fa-file-excel"></i> Export Excel</button>
@@ -832,10 +1030,22 @@ if ($action === 'export') {
         <div class="table-toolbar">
             <div class="data-count">
                 <i class="fa-solid fa-database"></i>
-                Menampilkan <strong><?= number_format($totalData, 0, ',', '.') ?></strong> data pemeriksaan
+                Menampilkan <strong><?= number_format($startNo, 0, ',', '.') ?></strong>–<strong><?= number_format(min($startNo + $perPage - 1, $totalData), 0, ',', '.') ?></strong> dari <strong><?= number_format($totalData, 0, ',', '.') ?></strong> data
                 <?php if ($filterEks !== ''): ?>
                     — filter: <span class="badge <?= $filterEks === 'sudah' ? 'badge-success' : 'badge-danger' ?>"><?= $filterEks === 'sudah' ? 'Sudah Dibaca' : 'Belum Dibaca' ?></span>
                 <?php endif; ?>
+                <?php if ($cari !== ''): ?>
+                    — pencarian: <strong>"<?= $escape($cari) ?>"</strong>
+                <?php endif; ?>
+            </div>
+            <div class="per-page-select">
+                <label for="perPageSelect">Tampilkan</label>
+                <select id="perPageSelect" onchange="changePerPage(this.value)">
+                    <?php foreach ([10, 25, 50, 100, 200] as $pp): ?>
+                        <option value="<?= $pp ?>" <?= $perPage === $pp ? 'selected' : '' ?>><?= $pp ?></option>
+                    <?php endforeach; ?>
+                </select>
+                <span>per halaman</span>
             </div>
         </div>
         <?php endif; ?>
@@ -862,8 +1072,8 @@ if ($action === 'export') {
                     </tr>
                 </thead>
                 <tbody>
-                <?php if ($totalData > 0): ?>
-                    <?php $no = 1; foreach ($rows as $row): ?>
+                <?php if (count($rows) > 0): ?>
+                    <?php $no = ($action === 'export') ? 1 : $startNo; foreach ($rows as $row): ?>
                     <tr>
                         <td class="text-center"><?= $no++ ?></td>
                         <td class="fw-600"><?= $escape($row['no_rawat']) ?></td>
@@ -927,27 +1137,12 @@ if ($action === 'export') {
                     <?php endif; ?>
                 <?php endif; ?>
                 </tbody>
-                <?php if ($totalData > 0): ?>
+                <?php if ($action === 'export' && $totalData > 0): ?>
                 <tfoot>
-                    <tr style="<?= $action === 'export' ? 'background-color:#e8f5e9;font-weight:bold;' : '' ?>">
-                        <td colspan="11" class="text-end fw-600" style="padding: 12px 14px;">
-                            <?php if ($action !== 'export'): ?>
-                                <strong>TOTAL BIAYA</strong>
-                            <?php else: ?>
-                                TOTAL BIAYA
-                            <?php endif; ?>
-                        </td>
-                        <td class="text-end fw-600" style="padding: 12px 14px; color: var(--kh-primary); font-size: 13.5px;">
-                            Rp <?= number_format($totalBiaya, 0, ',', '.') ?>
-                        </td>
-                        <td colspan="3" class="text-center" style="padding: 12px 14px;">
-                            <?php if ($action !== 'export'): ?>
-                                <span class="badge badge-success"><i class="fa-solid fa-check"></i> <?= $totalSudah ?></span>
-                                <span class="badge badge-danger" style="margin-left: 4px;"><i class="fa-solid fa-clock"></i> <?= $totalBelum ?></span>
-                            <?php else: ?>
-                                Sudah: <?= $totalSudah ?> | Belum: <?= $totalBelum ?>
-                            <?php endif; ?>
-                        </td>
+                    <tr style="background-color:#e8f5e9;font-weight:bold;">
+                        <td colspan="11" align="right">TOTAL BIAYA</td>
+                        <td align="right">Rp <?= number_format($totalBiaya, 0, ',', '.') ?></td>
+                        <td colspan="3" align="center">Sudah: <?= $totalSudah ?> | Belum: <?= $totalBelum ?></td>
                     </tr>
                 </tfoot>
                 <?php endif; ?>
@@ -955,15 +1150,84 @@ if ($action === 'export') {
         </div>
 
         <?php if ($action !== 'export' && $totalData > 0): ?>
+        <!-- SUMMARY FOOTER -->
         <div class="table-footer">
             <div>
-                <span style="color: var(--kh-text-muted);">Foto tersedia:</span> <strong style="color: var(--kh-info);"><?= $totalFoto ?></strong> &nbsp;|&nbsp;
-                <span style="color: var(--kh-text-muted);">Hasil tersedia:</span> <strong style="color: var(--kh-info);"><?= $totalHasil ?></strong>
+                <span style="color: var(--kh-text-muted);">Foto tersedia:</span> <strong style="color: var(--kh-info);"><?= number_format($totalFoto, 0, ',', '.') ?></strong> &nbsp;|&nbsp;
+                <span style="color: var(--kh-text-muted);">Hasil tersedia:</span> <strong style="color: var(--kh-info);"><?= number_format($totalHasil, 0, ',', '.') ?></strong> &nbsp;|&nbsp;
+                <span class="badge badge-success" style="font-size:10px;"><i class="fa-solid fa-check"></i> <?= number_format($totalSudah, 0, ',', '.') ?></span>
+                <span class="badge badge-danger" style="font-size:10px; margin-left:3px;"><i class="fa-solid fa-clock"></i> <?= number_format($totalBelum, 0, ',', '.') ?></span>
             </div>
             <div class="total-biaya">
                 Total: Rp <?= number_format($totalBiaya, 0, ',', '.') ?>
             </div>
         </div>
+
+        <!-- PAGINATION -->
+        <?php if ($totalPages > 1): ?>
+        <div class="pagination-wrapper">
+            <div class="pagination-info">
+                Halaman <strong><?= $page ?></strong> dari <strong><?= number_format($totalPages, 0, ',', '.') ?></strong>
+                &nbsp;·&nbsp; Total <strong><?= number_format($totalData, 0, ',', '.') ?></strong> data
+            </div>
+
+            <div class="pagination">
+                <?php
+                // Previous
+                if ($page > 1): ?>
+                    <a href="<?= $escape(buildPageUrl(1)) ?>" title="Halaman pertama"><i class="fa-solid fa-angles-left"></i></a>
+                    <a href="<?= $escape(buildPageUrl($page - 1)) ?>" title="Sebelumnya"><i class="fa-solid fa-angle-left"></i></a>
+                <?php else: ?>
+                    <span class="disabled"><span><i class="fa-solid fa-angles-left"></i></span></span>
+                    <span class="disabled"><span><i class="fa-solid fa-angle-left"></i></span></span>
+                <?php endif; ?>
+
+                <?php
+                // Page numbers with smart ellipsis
+                $range = 2; // pages around current
+                $startPage = max(1, $page - $range);
+                $endPage = min($totalPages, $page + $range);
+
+                if ($startPage > 1): ?>
+                    <a href="<?= $escape(buildPageUrl(1)) ?>">1</a>
+                    <?php if ($startPage > 2): ?>
+                        <span class="dots"><span>…</span></span>
+                    <?php endif; ?>
+                <?php endif; ?>
+
+                <?php for ($i = $startPage; $i <= $endPage; $i++): ?>
+                    <?php if ($i === $page): ?>
+                        <span class="active"><span><?= $i ?></span></span>
+                    <?php else: ?>
+                        <a href="<?= $escape(buildPageUrl($i)) ?>"><?= $i ?></a>
+                    <?php endif; ?>
+                <?php endfor; ?>
+
+                <?php if ($endPage < $totalPages): ?>
+                    <?php if ($endPage < $totalPages - 1): ?>
+                        <span class="dots"><span>…</span></span>
+                    <?php endif; ?>
+                    <a href="<?= $escape(buildPageUrl($totalPages)) ?>"><?= $totalPages ?></a>
+                <?php endif; ?>
+
+                <?php
+                // Next
+                if ($page < $totalPages): ?>
+                    <a href="<?= $escape(buildPageUrl($page + 1)) ?>" title="Berikutnya"><i class="fa-solid fa-angle-right"></i></a>
+                    <a href="<?= $escape(buildPageUrl($totalPages)) ?>" title="Halaman terakhir"><i class="fa-solid fa-angles-right"></i></a>
+                <?php else: ?>
+                    <span class="disabled"><span><i class="fa-solid fa-angle-right"></i></span></span>
+                    <span class="disabled"><span><i class="fa-solid fa-angles-right"></i></span></span>
+                <?php endif; ?>
+            </div>
+
+            <div class="pagination-goto">
+                <span>Ke halaman:</span>
+                <input type="number" id="gotoPage" min="1" max="<?= $totalPages ?>" value="<?= $page ?>" onkeydown="if(event.key==='Enter')gotoPage()">
+                <button onclick="gotoPage()">Go</button>
+            </div>
+        </div>
+        <?php endif; ?>
         <?php endif; ?>
     </div>
 
@@ -983,6 +1247,27 @@ if ($action === 'export') {
             if (el) el.textContent = h + ':' + m + ':' + s;
         }
         setInterval(updateClock, 1000);
+
+        // Change per page — preserves all current filters
+        function changePerPage(val) {
+            const params = new URLSearchParams(window.location.search);
+            params.set('per_page', val);
+            params.set('page', '1'); // reset to first page
+            params.delete('action');
+            window.location.search = params.toString();
+        }
+
+        // Go to specific page
+        function gotoPage() {
+            const input = document.getElementById('gotoPage');
+            let p = parseInt(input.value, 10);
+            if (isNaN(p) || p < 1) p = 1;
+            if (p > <?= $totalPages ?>) p = <?= $totalPages ?>;
+            const params = new URLSearchParams(window.location.search);
+            params.set('page', p);
+            params.delete('action');
+            window.location.search = params.toString();
+        }
 
         // Animate stat bars on load
         document.addEventListener('DOMContentLoaded', function() {
@@ -1010,6 +1295,5 @@ if ($action === 'export') {
 </body>
 </html>
 <?php
-mysqli_stmt_close($stmt);
 mysqli_close($koneksi);
 ?>
