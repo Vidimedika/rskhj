@@ -1,0 +1,4 @@
+RewriteEngine On
+
+# Jika URL /rekap_data dipanggil, arahkan ke rekap_data_pasien.php
+RewriteRule ^rekap_data$ rekap_data_pasien.php [L]
