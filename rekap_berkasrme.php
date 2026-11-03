@@ -22,6 +22,9 @@ $berdasarkan = $_GET['berdasarkan'] ?? 'masuk'; // Default filter ke Tanggal Mas
 $kd_dokter   = $_GET['kd_dokter']   ?? '';
 $keyword     = $_GET['keyword']     ?? ''; 
 $action      = $_GET['action']      ?? ''; 
+$limit       = 20;
+$page        = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
+$offset      = ($page - 1) * $limit;
 
 // 3. LOGIKA QUERY (PERBAIKAN: Ambil data kamar_inap & kunjungan dengan tanggal paling terbaru untuk mencegah duplikasi)
 $where = [
@@ -48,7 +51,7 @@ if ($kd_dokter) {
 }
 
 if ($keyword) {
-    $where[] = "(p.nm_pasien LIKE ? OR r.no_rkm_medis LIKE ? OR r.no_rawat LIKE ? OR bs.no_sep LIKE ?)";
+    $where[] = "(p.nm_pasien LIKE ? OR r.no_rkm_medis LIKE ? OR r.no_rawat LIKE ? OR EXISTS(SELECT 1 FROM bridging_sep bs_s WHERE bs_s.no_rawat = r.no_rawat AND bs_s.no_sep LIKE ?))";
     $like_keyword = "%$keyword%";
     $params[] = $like_keyword; $params[] = $like_keyword; $params[] = $like_keyword; $params[] = $like_keyword;
     $types .= "ssss";
@@ -56,81 +59,115 @@ if ($keyword) {
 
 $where_sql = implode(" AND ", $where);
 
-// OPTIMASI QUERY: Mengambil kamar_inap terbaru per no_rawat & mencegah duplikasi pasien dengan mengambil tanggal terbaru
-$sql = "SELECT 
-            r.no_rawat, r.no_rkm_medis, p.nm_pasien, 
-            IFNULL(bs.no_sep, '-') as no_sep, 
-            IFNULL(bs.no_kartu, '-') as no_kartu,
-            IFNULL(bs.klsrawat, '-') as kelas, 
-            ki.nm_bangsal, ki.tgl_masuk, ki.jam_masuk, ki.tgl_keluar, ki.jam_keluar, ki.diagnosa_awal, ki.diagnosa_akhir,
-            MAX(ni.no_nota) as no_nota,
-            IFNULL((SELECT SUM(b.totalbiaya) FROM billing b WHERE b.no_rawat = r.no_rawat), 0) as total_billing,
-            IFNULL(d_poly.nm_dokter, '-') as dr_poliklinik,
-            (SELECT GROUP_CONCAT(DISTINCT d.nm_dokter SEPARATOR ' | ') 
-             FROM dpjp_ranap dr 
-             JOIN dokter d ON dr.kd_dokter = d.kd_dokter 
-             WHERE dr.no_rawat = r.no_rawat) as daftar_dpjp,
-            IFNULL((SELECT GROUP_CONCAT(DISTINCT mbd.nama SEPARATOR ', ') 
-                    FROM berkas_digital_perawatan bdp 
-                    INNER JOIN master_berkas_digital mbd ON bdp.kode = mbd.kode 
-                    WHERE bdp.no_rawat = r.no_rawat), '-') as list_berkas,
-            EXISTS(SELECT 1 FROM penilaian_medis_igd WHERE no_rawat = r.no_rawat) as f_medis_igd,
-            EXISTS(SELECT 1 FROM data_triase_igd WHERE no_rawat = r.no_rawat) as f_triase,
-            EXISTS(SELECT 1 FROM permintaan_ranap WHERE no_rawat = r.no_rawat) as f_spr,
-            EXISTS(SELECT 1 FROM pasien_bayi WHERE no_rkm_medis = r.no_rkm_medis) as f_skl,
-            EXISTS(SELECT 1 FROM resume_pasien_ranap WHERE no_rawat = r.no_rawat) as f_resume,
-            EXISTS(SELECT 1 FROM laporan_operasi WHERE no_rawat = r.no_rawat) as f_operasi,
-            EXISTS(SELECT 1 FROM periksa_lab WHERE no_rawat = r.no_rawat) as f_lab,
-            EXISTS(SELECT 1 FROM periksa_radiologi WHERE no_rawat = r.no_rawat) as f_radiologi
-        FROM reg_periksa r
-        INNER JOIN pasien p ON r.no_rkm_medis = p.no_rkm_medis
-        INNER JOIN penjab pj ON r.kd_pj = pj.kd_pj
-        INNER JOIN (
-            SELECT 
-                k_in.no_rawat,
-                MIN(k_in.tgl_masuk) as tgl_masuk,
-                SUBSTRING_INDEX(GROUP_CONCAT(k_in.jam_masuk ORDER BY k_in.tgl_masuk ASC, k_in.jam_masuk ASC SEPARATOR '|||'), '|||', 1) as jam_masuk,
-                SUBSTRING_INDEX(GROUP_CONCAT(k_in.tgl_keluar ORDER BY (k_in.stts_pulang = 'Pindah Kamar') ASC, k_in.tgl_masuk DESC, k_in.jam_masuk DESC SEPARATOR '|||'), '|||', 1) as tgl_keluar,
-                SUBSTRING_INDEX(GROUP_CONCAT(k_in.jam_keluar ORDER BY (k_in.stts_pulang = 'Pindah Kamar') ASC, k_in.tgl_masuk DESC, k_in.jam_masuk DESC SEPARATOR '|||'), '|||', 1) as jam_keluar,
-                SUBSTRING_INDEX(GROUP_CONCAT(b.nm_bangsal ORDER BY (k_in.stts_pulang = 'Pindah Kamar') ASC, k_in.tgl_masuk DESC, k_in.jam_masuk DESC SEPARATOR '|||'), '|||', 1) as nm_bangsal,
-                SUBSTRING_INDEX(GROUP_CONCAT(NULLIF(TRIM(k_in.diagnosa_awal), '-') ORDER BY k_in.tgl_masuk ASC, k_in.jam_masuk ASC SEPARATOR '|||'), '|||', 1) as diagnosa_awal,
-                SUBSTRING_INDEX(GROUP_CONCAT(NULLIF(TRIM(k_in.diagnosa_akhir), '-') ORDER BY (k_in.stts_pulang = 'Pindah Kamar') ASC, k_in.tgl_masuk DESC, k_in.jam_masuk DESC SEPARATOR '|||'), '|||', 1) as diagnosa_akhir
-            FROM kamar_inap k_in
-            INNER JOIN kamar k ON k_in.kd_kamar = k.kd_kamar
-            INNER JOIN bangsal b ON k.kd_bangsal = b.kd_bangsal
-            WHERE IFNULL(k_in.diagnosa_awal, '') NOT LIKE '%batal%'
-              AND IFNULL(k_in.diagnosa_akhir, '') NOT LIKE '%batal%'
-            GROUP BY k_in.no_rawat
-            HAVING NOT (SUM(k_in.stts_pulang <> 'Pindah Kamar') = 0 AND SUM(k_in.lama) = 0 AND SUM(k_in.ttl_biaya) = 0)
-        ) ki ON r.no_rawat = ki.no_rawat
-        LEFT JOIN dokter d_poly ON r.kd_dokter = d_poly.kd_dokter
-        LEFT JOIN (
-            SELECT no_rawat,
-                   SUBSTRING_INDEX(GROUP_CONCAT(no_sep ORDER BY jnspelayanan ASC, tglsep DESC, no_sep DESC SEPARATOR '|||'), '|||', 1) as no_sep,
-                   SUBSTRING_INDEX(GROUP_CONCAT(no_kartu ORDER BY jnspelayanan ASC, tglsep DESC, no_sep DESC SEPARATOR '|||'), '|||', 1) as no_kartu,
-                   SUBSTRING_INDEX(GROUP_CONCAT(klsrawat ORDER BY jnspelayanan ASC, tglsep DESC, no_sep DESC SEPARATOR '|||'), '|||', 1) as klsrawat
-            FROM bridging_sep GROUP BY no_rawat
-        ) bs ON r.no_rawat = bs.no_rawat
-        LEFT JOIN nota_inap ni ON r.no_rawat = ni.no_rawat
-        WHERE $where_sql 
-        GROUP BY r.no_rawat
-        ORDER BY ki.tgl_masuk DESC, ki.jam_masuk DESC";
+// TAHAP 1: Query ringan untuk mengambil daftar no_rawat unik per pasien (tanggal terbaru) & hitung total halaman
+$sql_list = "SELECT r.no_rawat, r.no_rkm_medis
+             FROM reg_periksa r
+             INNER JOIN pasien p ON r.no_rkm_medis = p.no_rkm_medis
+             INNER JOIN (
+                 SELECT 
+                     k_in.no_rawat,
+                     MIN(k_in.tgl_masuk) as tgl_masuk,
+                     SUBSTRING_INDEX(GROUP_CONCAT(k_in.jam_masuk ORDER BY k_in.tgl_masuk ASC, k_in.jam_masuk ASC SEPARATOR '|||'), '|||', 1) as jam_masuk,
+                     SUBSTRING_INDEX(GROUP_CONCAT(k_in.tgl_keluar ORDER BY (k_in.stts_pulang = 'Pindah Kamar') ASC, k_in.tgl_masuk DESC, k_in.jam_masuk DESC SEPARATOR '|||'), '|||', 1) as tgl_keluar
+                 FROM kamar_inap k_in
+                 WHERE IFNULL(k_in.diagnosa_awal, '') NOT LIKE '%batal%'
+                   AND IFNULL(k_in.diagnosa_akhir, '') NOT LIKE '%batal%'
+                 GROUP BY k_in.no_rawat
+                 HAVING NOT (SUM(k_in.stts_pulang <> 'Pindah Kamar') = 0 AND SUM(k_in.lama) = 0 AND SUM(k_in.ttl_biaya) = 0)
+             ) ki ON r.no_rawat = ki.no_rawat
+             WHERE $where_sql
+             GROUP BY r.no_rawat
+             ORDER BY ki.tgl_masuk DESC, ki.jam_masuk DESC";
 
-$stmt = $conn->prepare($sql);
-$stmt->bind_param($types, ...$params);
-$stmt->execute();
-$result = $stmt->get_result();
+$stmt_list = $conn->prepare($sql_list);
+if (!empty($params)) $stmt_list->bind_param($types, ...$params);
+$stmt_list->execute();
+$res_list = $stmt_list->get_result();
 
-// Filter deduplikasi: Jika ada pasien (no_rkm_medis / no_rawat) yang dobel pada rentang tanggal, ambil yang tanggal masuknya paling terbaru saja
-$data_ranap = [];
+$valid_rawats = [];
 $seen_rm = [];
-while ($row = $result->fetch_assoc()) {
-    $rm = $row['no_rkm_medis'];
-    if (isset($seen_rm[$rm])) {
-        continue; // Karena sudah di-ORDER BY ki.tgl_masuk DESC, ki.jam_masuk DESC, baris pertama adalah yang paling terbaru
-    }
+while ($r_list = $res_list->fetch_assoc()) {
+    $rm = $r_list['no_rkm_medis'];
+    if (isset($seen_rm[$rm])) continue;
     $seen_rm[$rm] = true;
-    $data_ranap[] = $row;
+    $valid_rawats[] = $r_list['no_rawat'];
+}
+$stmt_list->close();
+
+$total_data  = count($valid_rawats);
+$total_pages = max(1, (int)ceil($total_data / $limit));
+if ($page > $total_pages) {
+    $page = $total_pages;
+    $offset = ($page - 1) * $limit;
+}
+
+$target_rawats = ($action == 'excel') ? $valid_rawats : array_slice($valid_rawats, $offset, $limit);
+
+// TAHAP 2: Hanya mengeksekusi subquery detail (Billing, SEP, Berkas, Pemeriksaan) pada 20 baris yang tampil
+$data_ranap = [];
+if (!empty($target_rawats)) {
+    $placeholders = implode(',', array_fill(0, count($target_rawats), '?'));
+    $sql = "SELECT 
+                r.no_rawat, r.no_rkm_medis, p.nm_pasien, 
+                IFNULL((SELECT SUBSTRING_INDEX(GROUP_CONCAT(bs.no_sep ORDER BY bs.jnspelayanan ASC, bs.tglsep DESC, bs.no_sep DESC SEPARATOR '|||'), '|||', 1) FROM bridging_sep bs WHERE bs.no_rawat = r.no_rawat), '-') as no_sep, 
+                IFNULL((SELECT SUBSTRING_INDEX(GROUP_CONCAT(bs.no_kartu ORDER BY bs.jnspelayanan ASC, bs.tglsep DESC, bs.no_sep DESC SEPARATOR '|||'), '|||', 1) FROM bridging_sep bs WHERE bs.no_rawat = r.no_rawat), '-') as no_kartu,
+                IFNULL((SELECT SUBSTRING_INDEX(GROUP_CONCAT(bs.klsrawat ORDER BY bs.jnspelayanan ASC, bs.tglsep DESC, bs.no_sep DESC SEPARATOR '|||'), '|||', 1) FROM bridging_sep bs WHERE bs.no_rawat = r.no_rawat), '-') as kelas, 
+                ki.nm_bangsal, ki.tgl_masuk, ki.jam_masuk, ki.tgl_keluar, ki.jam_keluar, ki.diagnosa_awal, ki.diagnosa_akhir,
+                MAX(ni.no_nota) as no_nota,
+                IFNULL((SELECT SUM(b.totalbiaya) FROM billing b WHERE b.no_rawat = r.no_rawat), 0) as total_billing,
+                IFNULL(d_poly.nm_dokter, '-') as dr_poliklinik,
+                (SELECT GROUP_CONCAT(DISTINCT d.nm_dokter SEPARATOR ' | ') 
+                 FROM dpjp_ranap dr 
+                 JOIN dokter d ON dr.kd_dokter = d.kd_dokter 
+                 WHERE dr.no_rawat = r.no_rawat) as daftar_dpjp,
+                IFNULL((SELECT GROUP_CONCAT(DISTINCT mbd.nama SEPARATOR ', ') 
+                        FROM berkas_digital_perawatan bdp 
+                        INNER JOIN master_berkas_digital mbd ON bdp.kode = mbd.kode 
+                        WHERE bdp.no_rawat = r.no_rawat), '-') as list_berkas,
+                EXISTS(SELECT 1 FROM penilaian_medis_igd WHERE no_rawat = r.no_rawat) as f_medis_igd,
+                EXISTS(SELECT 1 FROM data_triase_igd WHERE no_rawat = r.no_rawat) as f_triase,
+                EXISTS(SELECT 1 FROM permintaan_ranap WHERE no_rawat = r.no_rawat) as f_spr,
+                EXISTS(SELECT 1 FROM pasien_bayi WHERE no_rkm_medis = r.no_rkm_medis) as f_skl,
+                EXISTS(SELECT 1 FROM resume_pasien_ranap WHERE no_rawat = r.no_rawat) as f_resume,
+                EXISTS(SELECT 1 FROM laporan_operasi WHERE no_rawat = r.no_rawat) as f_operasi,
+                EXISTS(SELECT 1 FROM periksa_lab WHERE no_rawat = r.no_rawat) as f_lab,
+                EXISTS(SELECT 1 FROM periksa_radiologi WHERE no_rawat = r.no_rawat) as f_radiologi
+            FROM reg_periksa r
+            INNER JOIN pasien p ON r.no_rkm_medis = p.no_rkm_medis
+            INNER JOIN (
+                SELECT 
+                    k_in.no_rawat,
+                    MIN(k_in.tgl_masuk) as tgl_masuk,
+                    SUBSTRING_INDEX(GROUP_CONCAT(k_in.jam_masuk ORDER BY k_in.tgl_masuk ASC, k_in.jam_masuk ASC SEPARATOR '|||'), '|||', 1) as jam_masuk,
+                    SUBSTRING_INDEX(GROUP_CONCAT(k_in.tgl_keluar ORDER BY (k_in.stts_pulang = 'Pindah Kamar') ASC, k_in.tgl_masuk DESC, k_in.jam_masuk DESC SEPARATOR '|||'), '|||', 1) as tgl_keluar,
+                    SUBSTRING_INDEX(GROUP_CONCAT(k_in.jam_keluar ORDER BY (k_in.stts_pulang = 'Pindah Kamar') ASC, k_in.tgl_masuk DESC, k_in.jam_masuk DESC SEPARATOR '|||'), '|||', 1) as jam_keluar,
+                    SUBSTRING_INDEX(GROUP_CONCAT(b.nm_bangsal ORDER BY (k_in.stts_pulang = 'Pindah Kamar') ASC, k_in.tgl_masuk DESC, k_in.jam_masuk DESC SEPARATOR '|||'), '|||', 1) as nm_bangsal,
+                    SUBSTRING_INDEX(GROUP_CONCAT(NULLIF(TRIM(k_in.diagnosa_awal), '-') ORDER BY k_in.tgl_masuk ASC, k_in.jam_masuk ASC SEPARATOR '|||'), '|||', 1) as diagnosa_awal,
+                    SUBSTRING_INDEX(GROUP_CONCAT(NULLIF(TRIM(k_in.diagnosa_akhir), '-') ORDER BY (k_in.stts_pulang = 'Pindah Kamar') ASC, k_in.tgl_masuk DESC, k_in.jam_masuk DESC SEPARATOR '|||'), '|||', 1) as diagnosa_akhir
+                FROM kamar_inap k_in
+                INNER JOIN kamar k ON k_in.kd_kamar = k.kd_kamar
+                INNER JOIN bangsal b ON k.kd_bangsal = b.kd_bangsal
+                WHERE k_in.no_rawat IN ($placeholders)
+                  AND IFNULL(k_in.diagnosa_awal, '') NOT LIKE '%batal%'
+                  AND IFNULL(k_in.diagnosa_akhir, '') NOT LIKE '%batal%'
+                GROUP BY k_in.no_rawat
+            ) ki ON r.no_rawat = ki.no_rawat
+            LEFT JOIN dokter d_poly ON r.kd_dokter = d_poly.kd_dokter
+            LEFT JOIN nota_inap ni ON r.no_rawat = ni.no_rawat
+            WHERE r.no_rawat IN ($placeholders)
+            GROUP BY r.no_rawat
+            ORDER BY ki.tgl_masuk DESC, ki.jam_masuk DESC";
+
+    $stmt = $conn->prepare($sql);
+    $bind_types = str_repeat('s', count($target_rawats) * 2);
+    $bind_params = array_merge($target_rawats, $target_rawats);
+    $stmt->bind_param($bind_types, ...$bind_params);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    while ($row = $result->fetch_assoc()) {
+        $data_ranap[] = $row;
+    }
+    $stmt->close();
 }
 
 // 4. LOGIKA EXPORT
@@ -256,8 +293,8 @@ function render_status_td($val, $isExcel = false) {
             </thead>
             <tbody>
                 <?php
-                $no = 1;
                 $isExcel = ($action == 'excel');
+                $no = $isExcel ? 1 : ($offset + 1);
                 foreach ($data_ranap as $r):
                     $skor = $r['f_medis_igd'] + $r['f_triase'] + $r['f_spr'] + $r['f_skl'] + $r['f_resume'] + $r['f_operasi'] + $r['f_lab'] + $r['f_radiologi'];
                     $persen = round(($skor / 8) * 100); 
@@ -299,6 +336,35 @@ function render_status_td($val, $isExcel = false) {
             </tbody>
         </table>
     </div>
+
+    <?php if($action != 'excel'): ?>
+    <?php
+        $query_prev = $_GET;
+        $query_prev['page'] = max(1, $page - 1);
+        $query_next = $_GET;
+        $query_next['page'] = min($total_pages, $page + 1);
+        $start_row = $total_data > 0 ? ($offset + 1) : 0;
+        $end_row   = min($offset + $limit, $total_data);
+    ?>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-top:15px; padding:10px 15px; background:#f8f9fa; border:1px solid #ddd; border-radius:8px; font-size:12px;">
+        <div>
+            Menampilkan <b><?= $start_row ?> - <?= $end_row ?></b> dari <b><?= number_format($total_data, 0, ',', '.') ?></b> data (Halaman <b><?= $page ?></b> dari <b><?= $total_pages ?></b>)
+        </div>
+        <div style="display:flex; gap:8px;">
+            <?php if ($page > 1): ?>
+                <a href="?<?= htmlspecialchars(http_build_query($query_prev)) ?>" style="padding:7px 16px; background:#0a7c3b; color:white; text-decoration:none; border-radius:5px; font-weight:bold;">&laquo; Prev</a>
+            <?php else: ?>
+                <span style="padding:7px 16px; background:#e0e0e0; color:#999; border-radius:5px; font-weight:bold;">&laquo; Prev</span>
+            <?php endif; ?>
+
+            <?php if ($page < $total_pages): ?>
+                <a href="?<?= htmlspecialchars(http_build_query($query_next)) ?>" style="padding:7px 16px; background:#0a7c3b; color:white; text-decoration:none; border-radius:5px; font-weight:bold;">Next &raquo;</a>
+            <?php else: ?>
+                <span style="padding:7px 16px; background:#e0e0e0; color:#999; border-radius:5px; font-weight:bold;">Next &raquo;</span>
+            <?php endif; ?>
+        </div>
+    </div>
+    <?php endif; ?>
 </div>
 <div style="text-align:center; font-size:12px; color:#555; margin-top:30px; border-top:1px solid #ddd; padding-top:10px">
     © 2026 <b>VIDI MEDIKA KONSULTAN IT</b>. All Rights Reserved. Smart IT For Health. 
