@@ -161,7 +161,7 @@ function renderStatus($val, $isExcel) {
         <div class="filter-box">
             <form method="GET" style="display: flex; gap: 15px; align-items: flex-end; flex-wrap: wrap; justify-content: center;">
                 <div>
-                    <label class="label-filter">PERIODE TGL REGISTRASI</label>
+                    <label class="label-filter">PERIODE TGL REGISTRASI.</label>
                     <input type="date" name="tgl_awal" value="<?=$tgl_awal?>"> 
                     <input type="date" name="tgl_akhir" value="<?=$tgl_akhir?>">
                 </div>
