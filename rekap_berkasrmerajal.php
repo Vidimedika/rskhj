@@ -23,6 +23,9 @@ $kd_poli    = $_GET['kd_poli']    ?? '';
 $kd_dokter  = $_GET['kd_dokter']  ?? '';
 $search     = $_GET['search']     ?? ''; 
 $action     = $_GET['action']     ?? '';
+$limit      = 20;
+$page       = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
+$offset     = ($page - 1) * $limit;
 
 // 3. LOGIKA QUERY
 // Filter Jenis Bayar BPJS Kesehatan sesuai Master Penanggung (kecuali 087: BPJS KETENAGAKERJAAN & NON: NON BPJS)
@@ -42,7 +45,7 @@ if ($kd_poli) { $where[] = "r.kd_poli = ?"; $params[] = $kd_poli; $types .= "s";
 if ($kd_dokter) { $where[] = "r.kd_dokter = ?"; $params[] = $kd_dokter; $types .= "s"; }
 
 if ($search) { 
-    $where[] = "(p.nm_pasien LIKE ? OR r.no_rawat LIKE ? OR r.no_rkm_medis LIKE ? OR bs.no_sep LIKE ? OR bs.no_kartu LIKE ? OR ni.no_nota LIKE ?)"; 
+    $where[] = "(p.nm_pasien LIKE ? OR r.no_rawat LIKE ? OR r.no_rkm_medis LIKE ? OR EXISTS(SELECT 1 FROM bridging_sep bs_s WHERE bs_s.no_rawat = r.no_rawat AND (bs_s.no_sep LIKE ? OR bs_s.no_kartu LIKE ?)) OR ni.no_nota LIKE ?)"; 
     $lk = "%$search%";
     $params[] = $lk; $params[] = $lk; $params[] = $lk; $params[] = $lk; $params[] = $lk; $params[] = $lk;
     $types .= "ssssss"; 
@@ -50,14 +53,54 @@ if ($search) {
 
 $where_sql = implode(" AND ", $where);
 
-// OPTIMASI QUERY: Mencegah duplikasi dengan GROUP BY r.no_rawat, EXISTS(), dan Subquery Terindeks
+// HITUNG STATISTIK TOTAL & PAGINASI
+$stats = ['total' => 0, 'lengkap' => 0, 'belum' => 0];
+$sql_stats = "SELECT 
+                COUNT(*) AS total,
+                SUM(is_lengkap) AS lengkap
+              FROM (
+                  SELECT 
+                    r.no_rawat,
+                    CASE 
+                        WHEN pol.nm_poli LIKE '%IGD%' THEN 
+                            (EXISTS(SELECT 1 FROM penilaian_medis_igd WHERE no_rawat = r.no_rawat) 
+                             AND EXISTS(SELECT 1 FROM data_triase_igd WHERE no_rawat = r.no_rawat) 
+                             AND EXISTS(SELECT 1 FROM resume_pasien WHERE no_rawat = r.no_rawat))
+                        ELSE 
+                            EXISTS(SELECT 1 FROM resume_pasien WHERE no_rawat = r.no_rawat)
+                    END AS is_lengkap
+                  FROM reg_periksa r
+                  INNER JOIN pasien p ON r.no_rkm_medis = p.no_rkm_medis
+                  INNER JOIN poliklinik pol ON r.kd_poli = pol.kd_poli
+                  LEFT JOIN nota_jalan ni ON r.no_rawat = ni.no_rawat
+                  WHERE $where_sql
+                  GROUP BY r.no_rawat
+              ) AS stat_sub";
+$stmt_stats = $conn->prepare($sql_stats);
+if (!empty($params)) $stmt_stats->bind_param($types, ...$params);
+$stmt_stats->execute();
+if ($row_stats = $stmt_stats->get_result()->fetch_assoc()) {
+    $stats['total']   = (int)($row_stats['total'] ?? 0);
+    $stats['lengkap'] = (int)($row_stats['lengkap'] ?? 0);
+    $stats['belum']   = $stats['total'] - $stats['lengkap'];
+}
+$stmt_stats->close();
+
+$total_pages = max(1, (int)ceil($stats['total'] / $limit));
+if ($page > $total_pages) {
+    $page = $total_pages;
+    $offset = ($page - 1) * $limit;
+}
+
+// OPTIMASI QUERY: Hanya mengeksekusi subquery pada 20 baris yang tampil (atau semua saat export Excel)
+$limit_sql = ($action == 'excel') ? "" : "LIMIT $limit OFFSET $offset";
 $sql = "SELECT 
             r.no_rawat, r.no_rkm_medis, p.nm_pasien, pol.nm_poli,
-            IFNULL(bs.no_sep, '-') as no_sep, 
-            IFNULL(bs.no_kartu, '-') as no_kartu,
-            IFNULL(bs.asal_rujukan, '-') as asal_rujukan, 
+            IFNULL((SELECT MAX(bs.no_sep) FROM bridging_sep bs WHERE bs.no_rawat = r.no_rawat), '-') as no_sep, 
+            IFNULL((SELECT MAX(bs.no_kartu) FROM bridging_sep bs WHERE bs.no_rawat = r.no_rawat), '-') as no_kartu,
+            IFNULL((SELECT MAX(bs.asal_rujukan) FROM bridging_sep bs WHERE bs.no_rawat = r.no_rawat), '-') as asal_rujukan, 
             pj.png_jawab, 
-            IFNULL(bs.klsrawat, '-') as kelas, 
+            IFNULL((SELECT MAX(bs.klsrawat) FROM bridging_sep bs WHERE bs.no_rawat = r.no_rawat), '-') as kelas, 
             r.tgl_registrasi, 
             MAX(ni.no_nota) as no_nota, 
             IFNULL((SELECT SUM(b.totalbiaya) FROM billing b WHERE b.no_rawat = r.no_rawat), 0) as total_billing,
@@ -77,15 +120,11 @@ $sql = "SELECT
         INNER JOIN penjab pj ON r.kd_pj = pj.kd_pj
         INNER JOIN dokter d ON r.kd_dokter = d.kd_dokter
         INNER JOIN poliklinik pol ON r.kd_poli = pol.kd_poli
-        LEFT JOIN (
-            SELECT no_rawat, MAX(no_sep) as no_sep, MAX(no_kartu) as no_kartu, MAX(asal_rujukan) as asal_rujukan, MAX(klsrawat) as klsrawat
-            FROM bridging_sep 
-            GROUP BY no_rawat
-        ) bs ON r.no_rawat = bs.no_rawat
         LEFT JOIN nota_jalan ni ON r.no_rawat = ni.no_rawat
         WHERE $where_sql
         GROUP BY r.no_rawat
-        ORDER BY r.tgl_registrasi DESC, r.jam_reg DESC";
+        ORDER BY r.tgl_registrasi DESC, r.jam_reg DESC
+        $limit_sql";
 
 $stmt = $conn->prepare($sql);
 if(!empty($params)) $stmt->bind_param($types, ...$params);
@@ -93,14 +132,10 @@ $stmt->execute();
 $result = $stmt->get_result();
 
 $data_pasien = [];
-$stats = ['total' => 0, 'lengkap' => 0, 'belum' => 0];
-
 while ($row = $result->fetch_assoc()) {
     $isIGD = (stripos($row['nm_poli'], 'IGD') !== false);
     $skor = $isIGD ? ($row['f_medis_igd'] + $row['f_triase'] + $row['f_resume']) : $row['f_resume'];
     $row['persen'] = round(($skor / ($isIGD ? 3 : 1)) * 100);
-    $stats['total']++;
-    ($row['persen'] >= 100) ? $stats['lengkap']++ : $stats['belum']++;
     $data_pasien[] = $row;
 }
 
@@ -141,6 +176,13 @@ function renderStatus($val, $isExcel) {
         .badge { padding: 5px 10px; border-radius: 20px; color: white; font-weight: bold; font-size: 10px; }
         .label-filter { display:block; font-weight:bold; margin-bottom:5px; font-size: 10px; color: #555; }
         .search-input { width: 220px; padding: 6px; border: 1px solid #ccc; border-radius: 4px; border-left: 3px solid #0a7c3b; }
+        .pagination-bar { display: flex; justify-content: space-between; align-items: center; margin-top: 15px; padding: 10px 5px; flex-wrap: wrap; gap: 10px; }
+        .pagination-info { font-size: 12px; color: #555; font-weight: bold; }
+        .pagination-links { display: flex; gap: 6px; align-items: center; }
+        .page-btn { padding: 6px 12px; border: 1px solid #0a7c3b; border-radius: 5px; text-decoration: none; color: #0a7c3b; font-weight: bold; font-size: 11px; background: #fff; transition: 0.2s; }
+        .page-btn:hover { background: #e8f5e9; }
+        .page-btn.active { background: #0a7c3b; color: #fff; }
+        .page-btn.disabled { border-color: #ccc; color: #aaa; pointer-events: none; background: #f5f5f5; }
     </style>
     <?php endif; ?>
 </head>
@@ -231,7 +273,7 @@ function renderStatus($val, $isExcel) {
                 </tr>
             </thead>
             <tbody>
-                <?php $no=1; foreach($data_pasien as $r): ?>
+                <?php $no = ($action == 'excel') ? 1 : ($offset + 1); foreach($data_pasien as $r): ?>
                 <tr>
                     <td><?=$no++?></td>
                     <td style="font-family: monospace;"><?= ($action == 'excel' ? "'" : "") . $r['no_rawat'] ?></td>
@@ -270,6 +312,35 @@ function renderStatus($val, $isExcel) {
             </tbody>
         </table>
     </div>
+
+    <?php if ($action != 'excel' && $stats['total'] > 0): 
+        $base_query = [
+            'tgl_awal'  => $tgl_awal,
+            'tgl_akhir' => $tgl_akhir,
+            'kd_poli'   => $kd_poli,
+            'kd_dokter' => $kd_dokter,
+            'search'    => $search
+        ];
+        $start_item = $offset + 1;
+        $end_item   = min($offset + $limit, $stats['total']);
+    ?>
+    <div class="pagination-bar">
+        <div class="pagination-info">
+            Menampilkan <?= $start_item ?> - <?= $end_item ?> dari <?= $stats['total'] ?> pasien (Halaman <?= $page ?> dari <?= $total_pages ?>)
+        </div>
+        <div class="pagination-links">
+            <a class="page-btn <?= ($page <= 1) ? 'disabled' : '' ?>" href="?<?= http_build_query(array_merge($base_query, ['page' => $page - 1])) ?>">&laquo; Prev</a>
+            <?php
+            $start_p = max(1, $page - 2);
+            $end_p   = min($total_pages, $page + 2);
+            for ($p = $start_p; $p <= $end_p; $p++):
+            ?>
+                <a class="page-btn <?= ($p == $page) ? 'active' : '' ?>" href="?<?= http_build_query(array_merge($base_query, ['page' => $p])) ?>"><?= $p ?></a>
+            <?php endfor; ?>
+            <a class="page-btn <?= ($page >= $total_pages) ? 'disabled' : '' ?>" href="?<?= http_build_query(array_merge($base_query, ['page' => $page + 1])) ?>">Next &raquo;</a>
+        </div>
+    </div>
+    <?php endif; ?>
 </div>
 <div style="text-align:center; font-size:12px; color:#555; margin-top:30px; border-top:1px solid #ddd; padding-top:10px">
     © 2026 <b>VIDI MEDIKA KONSULTAN IT</b>. All Rights Reserved. Smart IT For Health.
