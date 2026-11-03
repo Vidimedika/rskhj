@@ -25,7 +25,7 @@ $search     = $_GET['search']     ?? '';
 $action     = $_GET['action']     ?? '';
 
 // 3. LOGIKA QUERY
-$where = ["r.status_lanjut='Ralan'", "pj.png_jawab LIKE '%BPJS%'"];
+$where = ["r.status_lanjut='Ralan'", "r.stts <> 'Batal'", "pj.png_jawab LIKE '%BPJS%'"];
 $params = [];
 $types = "";
 
