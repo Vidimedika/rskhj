@@ -119,7 +119,7 @@ $sql = "SELECT
             COALESCE(
                 CASE
                     WHEN LOWER(rp.status_lanjut) IN ('ralan', 'rajal', 'rawat jalan') THEN
-                        (SELECT GROUP_CONCAT(DISTINCT NULLIF(TRIM(pr.evaluasi), '') SEPARATOR ' | ')
+                        (SELECT GROUP_CONCAT(DISTINCT NULLIF(TRIM(pr.instruksi), '') SEPARATOR ' | ')
                          FROM pemeriksaan_ralan pr
                          WHERE pr.no_rawat = rp.no_rawat)
                     ELSE NULL
@@ -167,7 +167,11 @@ $sql_list_poli = "SELECT DISTINCT pol.kd_poli, pol.nm_poli
                   INNER JOIN dokter d ON rp.kd_dokter = d.kd_dokter
                   INNER JOIN poliklinik pol ON rp.kd_poli = pol.kd_poli
                   LEFT JOIN (
-                      SELECT sep.no_rawat, MAX(sk.tgl_surat) AS tgl_surat
+                      SELECT
+                          sep.no_rawat,
+                          GROUP_CONCAT(DISTINCT sep.no_sep SEPARATOR ', ') AS no_sep,
+                          GROUP_CONCAT(DISTINCT sk.no_surat SEPARATOR ', ') AS no_surat,
+                          MAX(sk.tgl_surat) AS tgl_surat
                       FROM bridging_sep sep
                       LEFT JOIN bridging_surat_kontrol_bpjs sk ON sk.no_sep = sep.no_sep
                       GROUP BY sep.no_rawat
