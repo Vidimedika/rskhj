@@ -25,7 +25,12 @@ $search     = $_GET['search']     ?? '';
 $action     = $_GET['action']     ?? '';
 
 // 3. LOGIKA QUERY
-$where = ["r.status_lanjut='Ralan'", "r.stts <> 'Batal'", "pj.png_jawab LIKE '%BPJS%'"];
+// Filter Jenis Bayar BPJS Kesehatan sesuai Master Penanggung (kecuali 087: BPJS KETENAGAKERJAAN & NON: NON BPJS)
+$where = [
+    "r.status_lanjut='Ralan'",
+    "r.stts <> 'Batal'",
+    "r.kd_pj IN ('025', '143', '208', '380', '494', '495', '496')"
+];
 $params = [];
 $types = "";
 
@@ -45,7 +50,7 @@ if ($search) {
 
 $where_sql = implode(" AND ", $where);
 
-// OPTIMASI QUERY: Mencegah duplikasi dengan EXISTS() dan Subquery Agregasi
+// OPTIMASI QUERY: Mencegah duplikasi dengan GROUP BY r.no_rawat, EXISTS(), dan Subquery Terindeks
 $sql = "SELECT 
             r.no_rawat, r.no_rkm_medis, p.nm_pasien, pol.nm_poli,
             IFNULL(bs.no_sep, '-') as no_sep, 
@@ -54,9 +59,9 @@ $sql = "SELECT
             pj.png_jawab, 
             IFNULL(bs.klsrawat, '-') as kelas, 
             r.tgl_registrasi, 
-            ni.no_nota, 
-            IFNULL(b.total_billing, 0) as total_billing,
-            ni.tanggal as tgl_pulang,
+            MAX(ni.no_nota) as no_nota, 
+            IFNULL((SELECT SUM(b.totalbiaya) FROM billing b WHERE b.no_rawat = r.no_rawat), 0) as total_billing,
+            MAX(ni.tanggal) as tgl_pulang,
             d.nm_dokter as dokter_dpjp,
             IFNULL((SELECT GROUP_CONCAT(DISTINCT mbd.nama SEPARATOR ', ') 
                     FROM berkas_digital_perawatan bdp 
@@ -78,12 +83,8 @@ $sql = "SELECT
             GROUP BY no_rawat
         ) bs ON r.no_rawat = bs.no_rawat
         LEFT JOIN nota_jalan ni ON r.no_rawat = ni.no_rawat
-        LEFT JOIN (
-            SELECT no_rawat, SUM(totalbiaya) as total_billing 
-            FROM billing 
-            GROUP BY no_rawat
-        ) b ON r.no_rawat = b.no_rawat
         WHERE $where_sql
+        GROUP BY r.no_rawat
         ORDER BY r.tgl_registrasi DESC, r.jam_reg DESC";
 
 $stmt = $conn->prepare($sql);
