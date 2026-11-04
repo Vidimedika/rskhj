@@ -17,15 +17,16 @@ if ($conn->connect_error) {
 }
 
 // 2. TANGKAP FILTER
-$tgl_awal   = $_GET['tgl_awal']   ?? date('Y-m-01');
-$tgl_akhir  = $_GET['tgl_akhir']  ?? date('Y-m-d');
-$kd_poli    = $_GET['kd_poli']    ?? ''; 
-$kd_dokter  = $_GET['kd_dokter']  ?? '';
-$search     = $_GET['search']     ?? ''; 
-$action     = $_GET['action']     ?? '';
-$limit      = 20;
-$page       = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
-$offset     = ($page - 1) * $limit;
+$tgl_awal    = $_GET['tgl_awal']    ?? date('Y-m-01');
+$tgl_akhir   = $_GET['tgl_akhir']   ?? date('Y-m-d');
+$kd_poli     = $_GET['kd_poli']     ?? ''; 
+$kd_dokter   = $_GET['kd_dokter']   ?? '';
+$stts_resume = $_GET['stts_resume'] ?? '';
+$search      = $_GET['search']      ?? ''; 
+$action      = $_GET['action']      ?? '';
+$limit       = 20;
+$page        = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
+$offset      = ($page - 1) * $limit;
 
 // 3. LOGIKA QUERY
 // Filter Jenis Bayar BPJS Kesehatan sesuai Master Penanggung (kecuali 087: BPJS KETENAGAKERJAAN & NON: NON BPJS)
@@ -43,6 +44,11 @@ $types .= "ss";
 
 if ($kd_poli) { $where[] = "r.kd_poli = ?"; $params[] = $kd_poli; $types .= "s"; }
 if ($kd_dokter) { $where[] = "r.kd_dokter = ?"; $params[] = $kd_dokter; $types .= "s"; }
+if ($stts_resume === 'ada') {
+    $where[] = "EXISTS(SELECT 1 FROM resume_pasien rp WHERE rp.no_rawat = r.no_rawat)";
+} elseif ($stts_resume === 'kosong') {
+    $where[] = "NOT EXISTS(SELECT 1 FROM resume_pasien rp WHERE rp.no_rawat = r.no_rawat)";
+}
 
 if ($search) { 
     $where[] = "(p.nm_pasien LIKE ? OR r.no_rawat LIKE ? OR r.no_rkm_medis LIKE ? OR EXISTS(SELECT 1 FROM bridging_sep bs_s WHERE bs_s.no_rawat = r.no_rawat AND (bs_s.no_sep LIKE ? OR bs_s.no_kartu LIKE ?)) OR ni.no_nota LIKE ?)"; 
@@ -229,11 +235,19 @@ function renderStatus($val, $isExcel) {
                     </select>
                 </div>
                 <div>
+                    <label class="label-filter">STATUS RESUME</label>
+                    <select name="stts_resume" style="width: 130px;">
+                        <option value="">- Semua -</option>
+                        <option value="ada" <?= $stts_resume === 'ada' ? 'selected' : '' ?>>Ada</option>
+                        <option value="kosong" <?= $stts_resume === 'kosong' ? 'selected' : '' ?>>- (Belum Ada)</option>
+                    </select>
+                </div>
+                <div>
                     <label class="label-filter">PENCARIAN GLOBAL</label>
                     <input type="text" name="search" value="<?=$search?>" placeholder="Nama/Nota/RM/Rawat/SEP/Kartu" class="search-input">
                 </div>
                 <button type="submit" style="background:#0a7c3b; color:white; padding: 7px 15px; border:none; border-radius:4px; cursor:pointer; font-weight:bold;">CARI DATA</button>
-                <a href="?action=excel&tgl_awal=<?=$tgl_awal?>&tgl_akhir=<?=$tgl_akhir?>&kd_poli=<?=$kd_poli?>&kd_dokter=<?=$kd_dokter?>&search=<?=$search?>" style="background:#2e7d32; color:white; padding: 7px 15px; text-decoration:none; border-radius:4px; font-weight:bold;">EXPORT EXCEL</a>
+                <a href="?action=excel&tgl_awal=<?=$tgl_awal?>&tgl_akhir=<?=$tgl_akhir?>&kd_poli=<?=$kd_poli?>&kd_dokter=<?=$kd_dokter?>&stts_resume=<?=$stts_resume?>&search=<?=$search?>" style="background:#2e7d32; color:white; padding: 7px 15px; text-decoration:none; border-radius:4px; font-weight:bold;">EXPORT EXCEL</a>
                 <a href="?" style="text-decoration:none; font-size:11px; color:red; padding-bottom: 7px;">Reset</a>
             </form>
         </div>
@@ -315,11 +329,12 @@ function renderStatus($val, $isExcel) {
 
     <?php if ($action != 'excel' && $stats['total'] > 0): 
         $base_query = [
-            'tgl_awal'  => $tgl_awal,
-            'tgl_akhir' => $tgl_akhir,
-            'kd_poli'   => $kd_poli,
-            'kd_dokter' => $kd_dokter,
-            'search'    => $search
+            'tgl_awal'    => $tgl_awal,
+            'tgl_akhir'   => $tgl_akhir,
+            'kd_poli'     => $kd_poli,
+            'kd_dokter'   => $kd_dokter,
+            'stts_resume' => $stts_resume,
+            'search'      => $search
         ];
         $start_item = $offset + 1;
         $end_item   = min($offset + $limit, $stats['total']);
