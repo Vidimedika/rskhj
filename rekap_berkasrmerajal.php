@@ -219,8 +219,35 @@ function renderStatus($val, $isExcel) {
                     <select name="kd_poli" style="width: 150px;">
                         <option value="">- Semua Poli -</option>
                         <?php
-                        $polis = $conn->query("SELECT kd_poli, nm_poli FROM poliklinik WHERE status='1' ORDER BY nm_poli");
+                        $where_poli = [
+                            "r.status_lanjut='Ralan'",
+                            "r.stts <> 'Batal'",
+                            "r.kd_pj IN ('025', '143', '208', '380', '494', '495', '496')",
+                            "r.tgl_registrasi BETWEEN ? AND ?"
+                        ];
+                        $params_poli = [$tgl_awal, $tgl_akhir];
+                        $types_poli  = "ss";
+                        if ($kd_dokter) {
+                            $where_poli[]  = "r.kd_dokter = ?";
+                            $params_poli[] = $kd_dokter;
+                            $types_poli   .= "s";
+                        }
+                        if ($stts_resume === 'ada') {
+                            $where_poli[] = "EXISTS(SELECT 1 FROM resume_pasien rp WHERE rp.no_rawat = r.no_rawat)";
+                        } elseif ($stts_resume === 'kosong') {
+                            $where_poli[] = "NOT EXISTS(SELECT 1 FROM resume_pasien rp WHERE rp.no_rawat = r.no_rawat)";
+                        }
+                        $sql_polis = "SELECT DISTINCT pol.kd_poli, pol.nm_poli
+                                      FROM poliklinik pol
+                                      INNER JOIN reg_periksa r ON r.kd_poli = pol.kd_poli
+                                      WHERE " . implode(" AND ", $where_poli) . "
+                                      ORDER BY pol.nm_poli";
+                        $stmt_polis = $conn->prepare($sql_polis);
+                        $stmt_polis->bind_param($types_poli, ...$params_poli);
+                        $stmt_polis->execute();
+                        $polis = $stmt_polis->get_result();
                         while($p = $polis->fetch_assoc()) echo "<option value='{$p['kd_poli']}' ".($kd_poli==$p['kd_poli']?'selected':'').">{$p['nm_poli']}</option>";
+                        $stmt_polis->close();
                         ?>
                     </select>
                 </div>
