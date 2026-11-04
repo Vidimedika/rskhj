@@ -229,8 +229,35 @@ function renderStatus($val, $isExcel) {
                     <select name="kd_dokter" style="width: 180px;">
                         <option value="">- Semua Dokter -</option>
                         <?php
-                        $docs = $conn->query("SELECT kd_dokter, nm_dokter FROM dokter WHERE status='1' ORDER BY nm_dokter");
+                        $where_doc = [
+                            "r.status_lanjut='Ralan'",
+                            "r.stts <> 'Batal'",
+                            "r.kd_pj IN ('025', '143', '208', '380', '494', '495', '496')",
+                            "r.tgl_registrasi BETWEEN ? AND ?"
+                        ];
+                        $params_doc = [$tgl_awal, $tgl_akhir];
+                        $types_doc  = "ss";
+                        if ($kd_poli) {
+                            $where_doc[]  = "r.kd_poli = ?";
+                            $params_doc[] = $kd_poli;
+                            $types_doc   .= "s";
+                        }
+                        if ($stts_resume === 'ada') {
+                            $where_doc[] = "EXISTS(SELECT 1 FROM resume_pasien rp WHERE rp.no_rawat = r.no_rawat)";
+                        } elseif ($stts_resume === 'kosong') {
+                            $where_doc[] = "NOT EXISTS(SELECT 1 FROM resume_pasien rp WHERE rp.no_rawat = r.no_rawat)";
+                        }
+                        $sql_docs = "SELECT DISTINCT d.kd_dokter, d.nm_dokter
+                                     FROM dokter d
+                                     INNER JOIN reg_periksa r ON r.kd_dokter = d.kd_dokter
+                                     WHERE " . implode(" AND ", $where_doc) . "
+                                     ORDER BY d.nm_dokter";
+                        $stmt_docs = $conn->prepare($sql_docs);
+                        $stmt_docs->bind_param($types_doc, ...$params_doc);
+                        $stmt_docs->execute();
+                        $docs = $stmt_docs->get_result();
                         while($d = $docs->fetch_assoc()) echo "<option value='{$d['kd_dokter']}' ".($kd_dokter==$d['kd_dokter']?'selected':'').">{$d['nm_dokter']}</option>";
+                        $stmt_docs->close();
                         ?>
                     </select>
                 </div>
