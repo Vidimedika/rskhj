@@ -133,39 +133,72 @@ $komponen = [
     <title>Monitoring IGD - RS KARTIKA HUSADA JATIASIH</title>
     <style>
         :root {
-            --hijau-rs: #0a7c3b;
-            --hijau-muda: #e8f5e9;
-            --merah-rs: #d32f2f;
-            --merah-muda: #ffebee;
+            --hijau-rs: #00a94f;
+            --hijau-gelap: #08783e;
+            --hijau-muda: #e8f7ed;
+            --oren-rs: #f79432;
+            --oren-muda: #fff3e5;
+            --merah-rs: #c62828;
+            --merah-muda: #ffeded;
+            --teks: #26352c;
+            --garis: #dce8df;
         }
-        body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 11px; background: #f4f6f8; padding: 15px; margin: 0; }
-        h2 { text-align: center; color: var(--hijau-rs); margin: 2px; text-transform: uppercase; }
-        .filter-box { background: white; padding: 15px; border-radius: 8px; border: 1px solid #ddd; margin-bottom: 15px; display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; align-items: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
-        .btn-filter { background: var(--hijau-rs); color: white; border: none; padding: 6px 15px; border-radius: 4px; cursor: pointer; font-weight: bold; }
-        .btn-excel { background: #1d6f42; color: white; border: none; padding: 6px 15px; border-radius: 4px; cursor: pointer; font-weight: bold; text-decoration: none; display: inline-block; }
-        .btn-reset { background: #666; color: white; border: none; padding: 6px 15px; border-radius: 4px; cursor: pointer; text-decoration: none; }
-        .scroll { overflow: auto; background: white; border: 1px solid #ccc; max-height: 650px; border-radius: 8px; }
-        table { border-collapse: collapse; width: 100%; white-space: nowrap; }
-        th { background: var(--hijau-rs); color: white; padding: 10px; border: 1px solid #08632f; }
+        * { box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 12px; line-height: 1.45; color: var(--teks); background: #f3f7f4; padding: 20px; margin: 0; }
+        .page-header { display: flex; align-items: center; justify-content: center; gap: 16px; padding: 16px 20px; margin: 0 auto 16px; max-width: 1500px; background: #fff; border: 1px solid var(--garis); border-top: 4px solid var(--oren-rs); border-radius: 12px; box-shadow: 0 4px 14px rgba(17, 74, 40, .07); }
+        .page-header img { width: 72px; height: 72px; object-fit: contain; }
+        .page-header h2 { color: var(--hijau-gelap); margin: 0; text-transform: uppercase; text-align: left; letter-spacing: .3px; }
+        .page-header .subtitle { color: #66766b; margin-top: 4px; font-size: 14px; }
+        .filter-box { max-width: 1500px; margin: 0 auto 16px; background: white; padding: 16px; border-radius: 10px; border: 1px solid var(--garis); border-left: 4px solid var(--oren-rs); display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; align-items: center; box-shadow: 0 3px 12px rgba(0,0,0,.04); }
+        input, select { min-height: 34px; padding: 6px 9px; border: 1px solid #cbd8ce; border-radius: 6px; color: var(--teks); background: #fff; }
+        input:focus, select:focus { outline: 2px solid rgba(247,148,50,.3); border-color: var(--oren-rs); }
+        .btn-filter, .btn-excel, .btn-reset { color: white; border: 0; padding: 8px 15px; border-radius: 6px; cursor: pointer; font-weight: 700; text-decoration: none; display: inline-block; transition: filter .15s ease, transform .15s ease; }
+        .btn-filter { background: var(--hijau-gelap); }
+        .btn-excel { background: #24824a; }
+        .btn-reset { background: #68766d; }
+        .btn-filter:hover, .btn-excel:hover, .btn-reset:hover { filter: brightness(1.08); transform: translateY(-1px); }
+        .scroll { overflow: auto; background: white; border: 1px solid var(--garis); max-height: 650px; border-radius: 9px; box-shadow: 0 3px 12px rgba(0,0,0,.04); }
+        table { border-collapse: separate; border-spacing: 0; width: 100%; white-space: nowrap; }
+        th { background: var(--hijau-gelap); color: white; padding: 10px 9px; border: 0; border-right: 1px solid rgba(255,255,255,.16); }
+        thead th { border-bottom: 3px solid var(--oren-rs); }
         <?php if (!$isExport): ?>
         th { position: sticky; top: 0; z-index: 10; }
         <?php endif; ?>
-        td { border: 1px solid #eee; padding: 8px 6px; text-align: center; }
+        td { border: 0; border-bottom: 1px solid #e8eee9; padding: 8px 7px; text-align: center; }
+        tbody tr:nth-child(even) { background: #f8fbf9; }
+        tbody tr:hover { background: var(--oren-muda); }
         /* Teks diagnosa diset rata kiri di CSS juga untuk opsi tambahan */
         td.txt-left { text-align: left !important; }
-        .lengkap { background-color: var(--hijau-muda) !important; color: #1b5e20 !important; font-weight: bold; }
-        .kurang { background-color: var(--merah-muda) !important; color: #b71c1c !important; font-weight: bold; }
+        .lengkap { background-color: var(--hijau-muda) !important; color: #17683a !important; font-weight: bold; }
+        .kurang { background-color: var(--merah-muda) !important; color: #a61d27 !important; font-weight: bold; }
         .na-kolom { background-color: #f5f5f5; color: #aaa; }
         .stts-ranap { background: #673ab7; color: white; padding: 2px 5px; border-radius: 3px; font-weight: bold; }
         .stts-ralan { background: #0288d1; color: white; padding: 2px 5px; border-radius: 3px; font-weight: bold; }
-        .footer-row { background: #eee; font-weight: bold; color: #333; }
+        .footer-row { background: var(--oren-muda); font-weight: bold; color: #5c431f; }
+        .section-title { max-width: 1500px; margin: 20px auto 9px; padding-left: 10px; color: var(--hijau-gelap); border-left: 4px solid var(--oren-rs); }
+        .pagination { text-align: center; margin: 12px 0; }
+        .site-footer { text-align: center; font-size: 10px; color: #718076; margin: 20px 0 4px; }
+        @media (max-width: 640px) {
+            body { padding: 10px; }
+            .page-header { justify-content: flex-start; padding: 12px; gap: 10px; }
+            .page-header img { width: 56px; height: 56px; }
+            .page-header h2 { font-size: 16px; }
+            .page-header .subtitle { font-size: 12px; }
+            .filter-box { justify-content: stretch; }
+            .filter-box input, .filter-box select { flex: 1 1 145px; }
+        }
     </style>
 </head>
 <body>
 
 <?php if (!$isExport): ?>
-<h2>RS KARTIKA HUSADA JATIASIH</h2>
-<h2 style="font-size:14px; margin-bottom:15px;">Monitoring Kunjungan IGD</h2>
+<header class="page-header">
+    <img src="file_20250905231623.logorskhj.jpg" alt="Logo RS Kartika Husada Jatiasih">
+    <div>
+        <h2>RS Kartika Husada Jatiasih</h2>
+        <div class="subtitle">Monitoring Kunjungan IGD</div>
+    </div>
+</header>
 
 <form method="get" class="filter-box">
     Periode: <input type="date" name="tgl_awal" value="<?=$tgl_awal?>"> s/d 
@@ -281,7 +314,7 @@ $komponen = [
 </div>
 
 <?php if (!$isExport): ?>
-<div style="text-align:center; margin:12px 0;">
+<div class="pagination">
     <?php
     $query_filter = http_build_query([
         'tgl_awal' => $tgl_awal,
@@ -299,7 +332,7 @@ $komponen = [
         <a class="btn-filter" style="display:inline-block; text-decoration:none;" href="?<?=$query_filter?>&halaman=<?=$halaman + 1?>">Next</a>
     <?php endif; ?>
 </div>
-<h3 style="margin:18px 0 8px; color:#0a7c3b;">Rekap Berkas per Dokter</h3>
+<h3 class="section-title">Rekap Berkas per Dokter</h3>
 <div class="scroll">
     <table>
         <thead>
@@ -329,7 +362,7 @@ $komponen = [
         </tbody>
     </table>
 </div>
-<div style="text-align:center; font-size:10px; color:#888; margin-top:20px;">
+<div class="site-footer">
     © 2026 <b>VIDI MEDIKA KONSULTAN IT</b> - Smart IT For Health 
 </div>
 <?php endif; ?>
