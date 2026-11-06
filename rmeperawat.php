@@ -389,6 +389,50 @@ if ($result) {
     }
 }
 
+// 5. QUERY KHUSUS FORMULIR ORDER DIET (HANYA PASIEN YANG MASIH DIRAWAT)
+$diet_rows = [];
+$sql_diet_only = "SELECT 
+            r.no_rawat, r.no_rkm_medis, p.nm_pasien, p.tgl_lahir,
+            $sql_diet_col
+            SUBSTRING_INDEX(GROUP_CONCAT(CONCAT(k.kd_kamar, ' ', b.nm_bangsal) ORDER BY ki.tgl_masuk DESC, ki.jam_masuk DESC SEPARATOR '||'), '||', 1) as nm_bangsal,
+            pj.png_jawab,
+            SUBSTRING_INDEX(GROUP_CONCAT(ki.tgl_keluar ORDER BY ki.tgl_masuk DESC, ki.jam_masuk DESC SEPARATOR '||'), '||', 1) as tgl_keluar,
+            COALESCE(
+                NULLIF(TRIM(SUBSTRING_INDEX(GROUP_CONCAT(NULLIF(TRIM(ki.diagnosa_awal), '') ORDER BY ki.tgl_masuk ASC, ki.jam_masuk ASC SEPARATOR '||'), '||', 1)), ''),
+                '-'
+            ) as diagnosa_awal,
+            COALESCE(
+                NULLIF(TRIM(SUBSTRING_INDEX(GROUP_CONCAT(NULLIF(TRIM(ki.diagnosa_akhir), '') ORDER BY ki.tgl_masuk DESC, ki.jam_masuk DESC SEPARATOR '||'), '||', 1)), ''),
+                (SELECT NULLIF(TRIM(rpr.diagnosa_utama), '') FROM resume_pasien_ranap rpr WHERE rpr.no_rawat = r.no_rawat LIMIT 1),
+                '-'
+            ) as diagnosa_akhir,
+            (SELECT GROUP_CONCAT(d.nm_dokter SEPARATOR ' | ') FROM dpjp_ranap dr JOIN dokter d ON dr.kd_dokter = d.kd_dokter WHERE dr.no_rawat = r.no_rawat) as daftar_dpjp
+        FROM reg_periksa r
+        INNER JOIN pasien p ON r.no_rkm_medis = p.no_rkm_medis
+        INNER JOIN penjab pj ON r.kd_pj = pj.kd_pj
+        INNER JOIN kamar_inap ki ON r.no_rawat = ki.no_rawat
+        INNER JOIN kamar k ON ki.kd_kamar = k.kd_kamar
+        INNER JOIN bangsal b ON k.kd_bangsal = b.kd_bangsal
+        WHERE $where_sql
+          AND (ki.tgl_keluar IS NULL OR ki.tgl_keluar = '0000-00-00')
+          AND (ki.stts_pulang IS NULL OR ki.stts_pulang = '' OR ki.stts_pulang = '-')
+        GROUP BY r.no_rawat
+        ORDER BY k.kd_kamar ASC, MIN(ki.tgl_masuk) DESC";
+$stmt_diet = $conn->prepare($sql_diet_only);
+if ($stmt_diet) {
+    if (!empty($types)) {
+        $stmt_diet->bind_param($types, ...$params);
+    }
+    $stmt_diet->execute();
+    $res_diet = $stmt_diet->get_result();
+    if ($res_diet) {
+        while ($rd = $res_diet->fetch_assoc()) {
+            $diet_rows[] = $rd;
+        }
+    }
+    $stmt_diet->close();
+}
+
 function status_cek($val, $isExcel = false) {
     if($isExcel) {
         return $val ? "<td bgcolor='#E8F5E9' style='color:#0f7541; text-align:center; font-weight:bold;'>Ada</td>" : "<td bgcolor='#FEF2F2' style='color:#c0392b; text-align:center;'>-</td>";

@@ -34,6 +34,9 @@ $tgl_akhir   = $_GET['tgl_akhir'] ?? date('Y-m-d');
 $dokter      = $_GET['dokter'] ?? "";
 $cara_bayar  = $_GET['cara_bayar'] ?? "";
 $status_pasien = $_GET['status_pasien'] ?? ""; 
+$per_halaman = 15;
+$halaman = max(1, (int)($_GET['halaman'] ?? 1));
+$offset = ($halaman - 1) * $per_halaman;
 
 /* ================= QUERY UTAMA (OPTIMIZED) ================= */
 $where = " AND (po.nm_poli LIKE '%IGD%' OR po.kd_poli IN ('IGDK','IGD'))"; 
@@ -74,6 +77,11 @@ WHERE r.tgl_registrasi BETWEEN ? AND ?
 GROUP BY r.no_rawat
 ORDER BY r.tgl_registrasi DESC, r.jam_reg DESC"; 
 
+// Ambil satu baris ekstra agar tombol Next hanya muncul jika masih ada data.
+if (!$isExport) {
+    $sql .= " LIMIT " . ($per_halaman + 1) . " OFFSET " . $offset;
+}
+
 $stmt = $conn->prepare($sql);
 
 if (!$stmt) {
@@ -83,6 +91,30 @@ if (!$stmt) {
 $stmt->bind_param($types, ...$params);
 $stmt->execute();
 $res = $stmt->get_result();
+
+/* Rekap kelengkapan berkas per dokter untuk seluruh hasil filter */
+$sql_rekap_dokter = "
+SELECT d.kd_dokter, d.nm_dokter,
+       COUNT(DISTINCT r.no_rawat) AS total_kunjungan,
+       COUNT(DISTINCT CASE WHEN dti.no_rawat IS NOT NULL THEN r.no_rawat END) AS triase_ada,
+       COUNT(DISTINCT CASE WHEN pmi.no_rawat IS NOT NULL THEN r.no_rawat END) AS medis_ada,
+       COUNT(DISTINCT CASE WHEN rp.no_rawat IS NOT NULL THEN r.no_rawat END) AS resume_ada,
+       COUNT(DISTINCT CASE WHEN pran.no_rawat IS NOT NULL THEN r.no_rawat END) AS spr_ada
+FROM reg_periksa r
+JOIN dokter d ON r.kd_dokter=d.kd_dokter
+JOIN poliklinik po ON r.kd_poli=po.kd_poli
+JOIN penjab pj ON r.kd_pj=pj.kd_pj
+LEFT JOIN data_triase_igd dti ON r.no_rawat=dti.no_rawat
+LEFT JOIN penilaian_medis_igd pmi ON r.no_rawat=pmi.no_rawat
+LEFT JOIN resume_pasien rp ON r.no_rawat=rp.no_rawat
+LEFT JOIN permintaan_ranap pran ON r.no_rawat=pran.no_rawat
+WHERE r.tgl_registrasi BETWEEN ? AND ? $where
+GROUP BY d.kd_dokter, d.nm_dokter
+ORDER BY d.nm_dokter";
+$stmt_rekap_dokter = $conn->prepare($sql_rekap_dokter);
+$stmt_rekap_dokter->bind_param($types, ...$params);
+$stmt_rekap_dokter->execute();
+$rekap_dokter = $stmt_rekap_dokter->get_result();
 
 $komponen = [
     "SEP" => "no_sep", "Medis IGD" => "ada_igd", "Triase" => "ada_triase",
@@ -182,7 +214,12 @@ $komponen = [
         $no = 1; $grand_siap = 0; $grand_belum = 0;
         $hit = array_fill_keys(array_values($komponen), 0);
 
+        $has_next = false;
         while($row = $res->fetch_assoc()){
+            if (!$isExport && $no > $per_halaman) {
+                $has_next = true;
+                break;
+            }
             $is_bpjs = (stripos($row['png_jawab'], 'BPJS') !== false);
             $sep_ada = !empty($row['no_sep']) ? 1 : 0;
             
@@ -244,6 +281,54 @@ $komponen = [
 </div>
 
 <?php if (!$isExport): ?>
+<div style="text-align:center; margin:12px 0;">
+    <?php
+    $query_filter = http_build_query([
+        'tgl_awal' => $tgl_awal,
+        'tgl_akhir' => $tgl_akhir,
+        'dokter' => $dokter,
+        'cara_bayar' => $cara_bayar,
+        'status_pasien' => $status_pasien
+    ]);
+    if ($halaman > 1):
+    ?>
+        <a class="btn-reset" href="?<?=$query_filter?>&halaman=<?=$halaman - 1?>">Previous</a>
+    <?php endif; ?>
+    <span style="margin:0 10px;">Halaman <?=$halaman?></span>
+    <?php if ($has_next): ?>
+        <a class="btn-filter" style="display:inline-block; text-decoration:none;" href="?<?=$query_filter?>&halaman=<?=$halaman + 1?>">Next</a>
+    <?php endif; ?>
+</div>
+<h3 style="margin:18px 0 8px; color:#0a7c3b;">Rekap Berkas per Dokter</h3>
+<div class="scroll">
+    <table>
+        <thead>
+            <tr>
+                <th>Nama Dokter</th><th>Total Kunjungan</th>
+                <th>Triase Ada</th><th>Triase Belum</th>
+                <th>Medis IGD Ada</th><th>Medis IGD Belum</th>
+                <th>Resume Ada</th><th>Resume Belum</th>
+                <th>SPR Ada</th><th>SPR Belum</th>
+            </tr>
+        </thead>
+        <tbody>
+        <?php while ($rekap = $rekap_dokter->fetch_assoc()): ?>
+            <tr>
+                <td style="text-align:left;"><?=htmlspecialchars($rekap['nm_dokter'])?></td>
+                <td><?=$rekap['total_kunjungan']?></td>
+                <td class="lengkap"><?=$rekap['triase_ada']?></td>
+                <td class="kurang"><?=$rekap['total_kunjungan'] - $rekap['triase_ada']?></td>
+                <td class="lengkap"><?=$rekap['medis_ada']?></td>
+                <td class="kurang"><?=$rekap['total_kunjungan'] - $rekap['medis_ada']?></td>
+                <td class="lengkap"><?=$rekap['resume_ada']?></td>
+                <td class="kurang"><?=$rekap['total_kunjungan'] - $rekap['resume_ada']?></td>
+                <td class="lengkap"><?=$rekap['spr_ada']?></td>
+                <td class="kurang"><?=$rekap['total_kunjungan'] - $rekap['spr_ada']?></td>
+            </tr>
+        <?php endwhile; ?>
+        </tbody>
+    </table>
+</div>
 <div style="text-align:center; font-size:10px; color:#888; margin-top:20px;">
     © 2026 <b>VIDI MEDIKA KONSULTAN IT</b> - Smart IT For Health 
 </div>
