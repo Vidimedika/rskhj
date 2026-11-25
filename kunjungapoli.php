@@ -195,7 +195,7 @@ try {
     <div class="card shadow-sm mb-4">
         <div class="header-title text-center">
             <h5 class="mb-0 fw-bold">RS KARTIKA HUSADA JATIASIH</h5>
-            <h5 class="mb-0 fw-bold">DATA KUNJUNGNA HARIAN PASIEN RAWAT JALAN</h5>
+            <h5 class="mb-0 fw-bold">DATA KUNJUNGAN HARIAN PASIEN RAWAT JALAN</h5>
             <small class="fw-medium">Periode: <?= htmlspecialchars(date('d-m-Y', strtotime($tgl1))) ?> s/d <?= htmlspecialchars(date('d-m-Y', strtotime($tgl2))) ?></small>
         </div>
 

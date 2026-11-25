@@ -104,6 +104,14 @@ $sql = "SELECT
             r.no_rawat, r.no_rkm_medis, p.nm_pasien, pol.nm_poli,
             IFNULL((SELECT MAX(bs.no_sep) FROM bridging_sep bs WHERE bs.no_rawat = r.no_rawat), '-') as no_sep, 
             IFNULL((SELECT MAX(bs.no_kartu) FROM bridging_sep bs WHERE bs.no_rawat = r.no_rawat), '-') as no_kartu,
+            IFNULL((SELECT GROUP_CONCAT(DISTINCT jp.nm_perawatan ORDER BY jp.nm_perawatan SEPARATOR ', ')
+                    FROM (
+                        SELECT no_rawat, kd_jenis_prw FROM rawat_jl_dr
+                        UNION ALL
+                        SELECT no_rawat, kd_jenis_prw FROM rawat_jl_drpr
+                    ) tindakan
+                    JOIN jns_perawatan jp ON jp.kd_jenis_prw = tindakan.kd_jenis_prw
+                    WHERE tindakan.no_rawat = r.no_rawat), '-') as tindakan_medis,
             IFNULL((SELECT MAX(bs.asal_rujukan) FROM bridging_sep bs WHERE bs.no_rawat = r.no_rawat), '-') as asal_rujukan, 
             pj.png_jawab, 
             IFNULL((SELECT MAX(bs.klsrawat) FROM bridging_sep bs WHERE bs.no_rawat = r.no_rawat), '-') as kelas, 
@@ -323,13 +331,14 @@ function renderStatus($val, $isExcel) {
                     <th>No. RM</th>
                     <th>Nama Pasien</th>
                     <th>No. Kartu</th>
+                    <th>SEP</th>
+                    <th>Tindakan Medis</th>
                     <th>Tgl Masuk</th>
                     <th>Tgl Keluar (Nota)</th>
                     <th>No. Nota</th>
                     <th>Billing</th>
                     <th>Dokter</th>
                     <th>Poli/Unit</th>
-                    <th>SEP</th>
                     <th>Awal Medis IGD</th>
                     <th>Triase</th>
                     <th>Resume</th>
@@ -348,6 +357,8 @@ function renderStatus($val, $isExcel) {
                     <td style="font-family: monospace;"><?= ($action == 'excel' ? "'" : "") . $r['no_rkm_medis'] ?></td>
                     <td style="text-align: left; font-weight: bold;"><?=strtoupper($r['nm_pasien'])?></td>
                     <td><?= ($action == 'excel' ? "'" : "") . ($r['no_kartu'] ?: '-') ?></td>
+                    <td><?= ($action == 'excel' ? "'" : "") . ($r['no_sep'] ?: '-') ?></td>
+                    <td style="text-align: left;"><?= htmlspecialchars($r['tindakan_medis'] ?: '-', ENT_QUOTES, 'UTF-8') ?></td>
                     <td><?=date('d/m/Y', strtotime($r['tgl_registrasi']))?></td>
                     <td style="color:#0a7c3b; font-weight:bold;">
                         <?= ($r['tgl_pulang'] && $r['tgl_pulang'] != '0000-00-00') ? date('d/m/Y', strtotime($r['tgl_pulang'])) : '-' ?>
@@ -358,7 +369,6 @@ function renderStatus($val, $isExcel) {
                     </td>
                     <td style="text-align: left;"><?=$r['dokter_dpjp']?></td>
                     <td style="font-weight: bold;"><?=$r['nm_poli']?></td>
-                    <td><?= ($action == 'excel' ? "'" : "") . ($r['no_sep'] ?: '-') ?></td>
                     
                     <?= renderStatus($r['f_medis_igd'], ($action=='excel')) ?>
                     <?= renderStatus($r['f_triase'], ($action=='excel')) ?>
